@@ -1,0 +1,108 @@
+import uuid
+import logging
+from fastapi import FastAPI, Depends
+from sqlalchemy.orm import Session
+from db.database import engine, Base, get_db
+from db.models import Incident
+from agent.graph import build_graph
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+Base.metadata.create_all(bind=engine)
+
+app = FastAPI(title="SOC AI Agent")
+graph = build_graph()
+
+@app.post("/webhook/wazuh")
+async def receive_alert(alert: dict, db: Session = Depends(get_db)):
+    """Recebe alertas do Wazuh e processa com o agente LangGraph."""
+    logger.info(f"Alert received: rule_id={alert.get('rule', {}).get('id')}")
+
+    initial_state = {
+        "raw_alert": alert,
+        "agent_name": "",
+        "rule_id": "",
+        "rule_description": "",
+        "rule_level": 0,
+        "mitre_technique": "",
+        "timestamp": "",
+        "classification": "",
+        "confidence": 0,
+        "severity": "",
+        "reasoning": "",
+        "recommended_action": "",
+        "decision": "",
+        "incident_id": None,
+        "status": "",
+    }
+
+    result = graph.invoke(initial_state)
+
+    incident_id = str(uuid.uuid4())
+    incident = Incident(
+        id=incident_id,
+        agent_name=result.get("agent_name"),
+        rule_id=result.get("rule_id"),
+        rule_description=result.get("rule_description"),
+        rule_level=result.get("rule_level"),
+        mitre_technique=result.get("mitre_technique"),
+        classification=result.get("classification"),
+        confidence=result.get("confidence"),
+        severity=result.get("severity"),
+        reasoning=result.get("reasoning"),
+        recommended_action=result.get("recommended_action"),
+        decision=result.get("decision"),
+        status=result.get("status"),
+    )
+    db.add(incident)
+    db.commit()
+
+    logger.info(f"Incident {incident_id} saved - decision={result.get('decision')} confidence={result.get('confidence')}%")
+
+    return {
+        "incident_id": incident_id,
+        "classification": result.get("classification"),
+        "confidence": result.get("confidence"),
+        "severity": result.get("severity"),
+        "decision": result.get("decision"),
+        "reasoning": result.get("reasoning"),
+        "recommended_action": result.get("recommended_action"),
+    }
+
+@app.get("/incidents")
+def list_incidents(db: Session = Depends(get_db)):
+    """Lista todos os incidentes guardados."""
+    return db.query(Incident).order_by(Incident.created_at.desc()).all()
+
+@app.get("/incidents/pending")
+def list_pending(db: Session = Depends(get_db)):
+    """Lista incidentes aguardando revisão humana."""
+    return db.query(Incident).filter(Incident.status == "pending_human").all()
+
+
+@app.post("/incidents/{incident_id}/approve")
+def approve_incident(incident_id: str, db: Session = Depends(get_db)):
+    """Analista aprova a ação recomendada."""
+    incident = db.query(Incident).filter(Incident.id == incident_id).first()
+    if not incident:
+        return {"error": "Incident not found"}
+    incident.status = "approved"
+    db.commit()
+    logger.info(f"Incident {incident_id} APPROVED by human analyst")
+    return {"incident_id": incident_id, "status": "approved", "action": incident.recommended_action}
+
+@app.post("/incidents/{incident_id}/reject")
+def reject_incident(incident_id: str, db: Session = Depends(get_db)):
+    """Analista rejeita — fecha como falso positivo."""
+    incident = db.query(Incident).filter(Incident.id == incident_id).first()
+    if not incident:
+        return {"error": "Incident not found"}
+    incident.status = "rejected"
+    db.commit()
+    logger.info(f"Incident {incident_id} REJECTED by human analyst - closed as false positive")
+    return {"incident_id": incident_id, "status": "rejected"}
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
