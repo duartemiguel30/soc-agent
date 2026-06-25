@@ -1,6 +1,10 @@
 export type AdminUser = {
   username: string;
   role?: string;
+  session?: {
+    created_at?: string;
+    expires_at?: string;
+  };
 };
 
 export type Incident = {

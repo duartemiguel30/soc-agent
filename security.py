@@ -31,3 +31,7 @@ def verify_password(password: str, password_hash: str) -> bool:
         return hmac.compare_digest(digest, expected_hash)
     except (TypeError, ValueError):
         return False
+
+
+def hash_session_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()

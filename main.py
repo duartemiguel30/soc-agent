@@ -1,20 +1,18 @@
-import base64
-import hmac
-import json
 import logging
 import os
-import time
+import secrets
 import uuid
+from datetime import datetime, timedelta
 
 from agent.graph import build_graph
 from db.database import Base, engine, get_db
-from db.models import AdminUser, Incident
+from db.models import AdminSession, AdminUser, Incident
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from security import verify_password
+from security import hash_session_token, verify_password
 from sqlalchemy.orm import Session
 
 logging.basicConfig(level=logging.INFO)
@@ -28,7 +26,7 @@ graph = build_graph()
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "http://192.168.56.105:3000")
 AUTH_COOKIE_NAME = os.getenv("AUTH_COOKIE_NAME", "soc_admin_session")
 AUTH_COOKIE_SECURE = os.getenv("AUTH_COOKIE_SECURE", "false").lower() in {"1", "true", "yes", "on"}
-AUTH_SESSION_TTL_SECONDS = int(os.getenv("AUTH_SESSION_TTL_SECONDS", "28800"))
+SESSION_TTL_HOURS = int(os.getenv("SESSION_TTL_HOURS", "8"))
 
 app.add_middleware(
     CORSMiddleware,
@@ -44,103 +42,31 @@ class LoginRequest(BaseModel):
     password: str
 
 
-def _base64url_encode(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+def utc_now() -> datetime:
+    return datetime.utcnow()
 
 
-def _base64url_decode(data: str) -> bytes:
-    padding = "=" * (-len(data) % 4)
-    return base64.urlsafe_b64decode(data + padding)
+def get_client_ip(request: Request) -> str | None:
+    forwarded_for = request.headers.get("x-forwarded-for")
+    if forwarded_for:
+        return forwarded_for.split(",", 1)[0].strip()
+    return request.client.host if request.client else None
 
 
-def _get_required_env(name: str) -> str:
-    value = os.getenv(name)
-    if not value:
-        raise RuntimeError(f"{name} is not configured")
-    return value
-
-
-def create_session_token(username: str) -> str:
-    jwt_secret = _get_required_env("JWT_SECRET")
-    now = int(time.time())
-    header = {"alg": "HS256", "typ": "JWT"}
-    payload = {"sub": username, "iat": now, "exp": now + AUTH_SESSION_TTL_SECONDS}
-    signing_input = ".".join(
-        [
-            _base64url_encode(json.dumps(header, separators=(",", ":")).encode("utf-8")),
-            _base64url_encode(json.dumps(payload, separators=(",", ":")).encode("utf-8")),
-        ]
-    )
-    signature = hmac.new(jwt_secret.encode("utf-8"), signing_input.encode("ascii"), hashlib.sha256).digest()
-    return f"{signing_input}.{_base64url_encode(signature)}"
-
-
-def decode_session_token(token: str) -> dict:
-    jwt_secret = _get_required_env("JWT_SECRET")
-    try:
-        header_b64, payload_b64, signature_b64 = token.split(".", 2)
-        signing_input = f"{header_b64}.{payload_b64}"
-        expected_signature = hmac.new(
-            jwt_secret.encode("utf-8"),
-            signing_input.encode("ascii"),
-            hashlib.sha256,
-        ).digest()
-        if not hmac.compare_digest(_base64url_decode(signature_b64), expected_signature):
-            raise ValueError("Invalid session signature")
-        payload = json.loads(_base64url_decode(payload_b64))
-        if int(payload.get("exp", 0)) < int(time.time()):
-            raise ValueError("Session expired")
-        return payload
-    except (ValueError, json.JSONDecodeError, KeyError, TypeError):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired admin session",
-        )
-
-
-def get_current_admin(request: Request, db: Session = Depends(get_db)) -> dict:
-    token = request.cookies.get(AUTH_COOKIE_NAME)
-    if not token:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Admin authentication required")
-    try:
-        payload = decode_session_token(token)
-    except RuntimeError:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Admin authentication required")
-    admin_user = db.query(AdminUser).filter(AdminUser.username == payload["sub"]).first()
-    if not admin_user or not admin_user.is_active:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Admin authentication required")
-    return {"username": admin_user.username, "role": admin_user.role}
-
-
-@app.post("/auth/login")
-def login(credentials: LoginRequest, response: Response, db: Session = Depends(get_db)):
-    try:
-        _get_required_env("JWT_SECRET")
-    except RuntimeError as exc:
-        logger.error("Admin auth is not fully configured: %s", exc)
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Admin auth is not configured")
-
-    admin_user = db.query(AdminUser).filter(AdminUser.username == credentials.username).first()
-    if not admin_user or not admin_user.is_active:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid admin credentials")
-
-    if not verify_password(credentials.password, admin_user.password_hash):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid admin credentials")
-
+def set_session_cookie(response: Response, token: str, expires_at: datetime) -> None:
+    max_age = max(0, int((expires_at - utc_now()).total_seconds()))
     response.set_cookie(
         key=AUTH_COOKIE_NAME,
-        value=create_session_token(admin_user.username),
+        value=token,
         httponly=True,
         secure=AUTH_COOKIE_SECURE,
         samesite="lax",
-        max_age=AUTH_SESSION_TTL_SECONDS,
+        max_age=max_age,
         path="/",
     )
-    return {"username": admin_user.username, "role": admin_user.role}
 
 
-@app.post("/auth/logout")
-def logout(response: Response):
+def clear_session_cookie(response: Response) -> None:
     response.delete_cookie(
         key=AUTH_COOKIE_NAME,
         httponly=True,
@@ -148,12 +74,75 @@ def logout(response: Response):
         samesite="lax",
         path="/",
     )
+
+
+def get_current_admin(request: Request, db: Session = Depends(get_db)) -> dict:
+    token = request.cookies.get(AUTH_COOKIE_NAME)
+    if not token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Admin authentication required")
+
+    token_hash = hash_session_token(token)
+    admin_session = db.query(AdminSession).filter(AdminSession.token_hash == token_hash).first()
+    if not admin_session:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Admin authentication required")
+    if admin_session.revoked_at is not None or admin_session.expires_at <= utc_now():
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Admin authentication required")
+
+    admin_user = db.query(AdminUser).filter(AdminUser.id == admin_session.admin_user_id).first()
+    if not admin_user or not admin_user.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Admin authentication required")
+    return {"user": admin_user, "session": admin_session}
+
+
+@app.post("/auth/login")
+def login(credentials: LoginRequest, request: Request, response: Response, db: Session = Depends(get_db)):
+    admin_user = db.query(AdminUser).filter(AdminUser.username == credentials.username).first()
+    if not admin_user or not admin_user.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid admin credentials")
+
+    if not verify_password(credentials.password, admin_user.password_hash):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid admin credentials")
+
+    raw_token = secrets.token_urlsafe(32)
+    expires_at = utc_now() + timedelta(hours=SESSION_TTL_HOURS)
+    admin_session = AdminSession(
+        admin_user_id=admin_user.id,
+        token_hash=hash_session_token(raw_token),
+        expires_at=expires_at,
+        user_agent=request.headers.get("user-agent"),
+        client_ip=get_client_ip(request),
+    )
+    db.add(admin_session)
+    db.commit()
+
+    set_session_cookie(response, raw_token, expires_at)
+    return {"username": admin_user.username, "role": admin_user.role}
+
+
+@app.post("/auth/logout")
+def logout(request: Request, response: Response, db: Session = Depends(get_db)):
+    token = request.cookies.get(AUTH_COOKIE_NAME)
+    if token:
+        admin_session = db.query(AdminSession).filter(AdminSession.token_hash == hash_session_token(token)).first()
+        if admin_session and admin_session.revoked_at is None:
+            admin_session.revoked_at = utc_now()
+            db.commit()
+    clear_session_cookie(response)
     return {"ok": True}
 
 
 @app.get("/auth/me")
 def me(admin: dict = Depends(get_current_admin)):
-    return {"username": admin["username"], "role": admin["role"]}
+    admin_user = admin["user"]
+    admin_session = admin["session"]
+    return {
+        "username": admin_user.username,
+        "role": admin_user.role,
+        "session": {
+            "created_at": admin_session.created_at,
+            "expires_at": admin_session.expires_at,
+        },
+    }
 
 
 @app.post("/webhook/wazuh")

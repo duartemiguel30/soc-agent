@@ -7,14 +7,13 @@ FastAPI remains the SOC backend for Wazuh ingestion, incident APIs, LangGraph/Ge
 Create a local `.env` from `.env.example` and set session configuration only:
 
 ```bash
-JWT_SECRET=replace-with-long-random-secret
 AUTH_COOKIE_NAME=soc_admin_session
 AUTH_COOKIE_SECURE=false
-AUTH_SESSION_TTL_SECONDS=28800
 FRONTEND_ORIGIN=http://192.168.56.105:3000
+SESSION_TTL_HOURS=8
 ```
 
-Admin users are stored in SQLite in the `admin_users` table. No default admin is created automatically, and admin credentials must not be stored in `.env`.
+Admin users are stored in SQLite in the `admin_users` table. Admin sessions are stored in SQLite in the `admin_sessions` table. The browser receives only an opaque HttpOnly session cookie; the database stores only `token_hash`, never the raw token. No `JWT_SECRET` is needed, and no default admin is created automatically.
 
 Run the backend:
 
@@ -24,7 +23,7 @@ source venv/bin/activate
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-FastAPI issues a signed HttpOnly cookie with `SameSite=Lax` after a successful admin login. `AUTH_COOKIE_SECURE=false` is intended for local HTTP development; set it to `true` behind HTTPS in production.
+FastAPI issues an opaque HttpOnly cookie with `SameSite=Lax` after a successful admin login. `AUTH_COOKIE_SECURE=false` is intended for local HTTP development; set it to `true` behind HTTPS in production.
 
 ## Manual Admin Creation
 
@@ -49,13 +48,14 @@ INSERT INTO admin_users (username, password_hash, role, is_active)
 VALUES ('admin', '<generated_hash>', 'admin', 1);
 ```
 
-Verify the row:
+Verify admin users and sessions:
 
 ```sql
 SELECT id, username, role, is_active, created_at FROM admin_users;
+SELECT id, admin_user_id, created_at, expires_at, revoked_at FROM admin_sessions;
 ```
 
-Do not commit real passwords, hashes, `.env`, or `incidents.db`.
+Do not commit real passwords, hashes, session tokens, `.env`, or `incidents.db`.
 
 ## Routes
 
@@ -102,4 +102,4 @@ The old FastAPI-served `static/index.html` remains as a legacy fallback, but the
 
 ## Security Notes
 
-Do not commit `.env`, `incidents.db`, `venv/`, `__pycache__/`, API keys, GitHub tokens, or other secrets. The Next.js app does not know or store admin credentials; it relies on FastAPI's HttpOnly session cookie through `/backend/*`.
+Do not commit `.env`, `incidents.db`, `venv/`, `__pycache__/`, API keys, GitHub tokens, cookies, raw session tokens, or other secrets. The Next.js app does not know or store admin credentials or tokens; it relies on FastAPI's HttpOnly session cookie through `/backend/*`.
