@@ -10,8 +10,13 @@
   --muted: #8aa59b;
   --accent: #39d98a;
   --accent-strong: #18b96d;
+  --info: #62b6ff;
   --danger: #ff6464;
   --warning: #f5b84b;
+  --critical: #ff6b6b;
+  --high: #ff9a5c;
+  --medium: #f5c451;
+  --low: #4fd18b;
   --shadow: 0 18px 50px rgba(0, 0, 0, 0.34);
 }
 
@@ -41,7 +46,8 @@ a {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -214,7 +220,7 @@ button:disabled {
 }
 
 .page {
-  width: min(100%, 1280px);
+  width: min(100%, 1360px);
   margin: 0 auto;
   padding: 32px;
 }
@@ -315,9 +321,15 @@ button:disabled {
   color: #ffd5d5;
 }
 
+.alert.success {
+  border: 1px solid rgba(57, 217, 138, 0.46);
+  background: rgba(57, 217, 138, 0.1);
+  color: #c7ffe2;
+}
+
 .metric-grid {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
   gap: 14px;
   margin-bottom: 22px;
 }
@@ -334,7 +346,8 @@ button:disabled {
 .metric-card {
   display: grid;
   gap: 8px;
-  min-height: 110px;
+  min-height: 104px;
+  min-width: 0;
   padding: 16px;
 }
 
@@ -346,13 +359,15 @@ button:disabled {
   font-size: 2rem;
 }
 
-.split-grid {
+.dashboard-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(220px, 0.65fr);
   gap: 18px;
 }
 
 .panel {
+  min-width: 0;
   padding: 18px;
 }
 
@@ -373,11 +388,14 @@ button:disabled {
 .incident-list {
   display: grid;
   gap: 14px;
+  min-width: 0;
 }
 
 .incident-card {
   display: grid;
   gap: 14px;
+  min-width: 0;
+  overflow: hidden;
   padding: 16px;
 }
 
@@ -391,6 +409,11 @@ button:disabled {
   font-size: 1rem;
   line-height: 1.35;
   margin-top: 6px;
+  overflow-wrap: anywhere;
+}
+
+.incident-title-block {
+  min-width: 0;
 }
 
 .mono {
@@ -418,9 +441,24 @@ button:disabled {
   white-space: nowrap;
 }
 
-.badge.critical {
+.badge.severity-critical {
   border-color: rgba(255, 100, 100, 0.55);
-  color: #ffb2b2;
+  color: var(--critical);
+}
+
+.badge.severity-high {
+  border-color: rgba(255, 154, 92, 0.55);
+  color: var(--high);
+}
+
+.badge.severity-medium {
+  border-color: rgba(245, 196, 81, 0.55);
+  color: var(--medium);
+}
+
+.badge.severity-low {
+  border-color: rgba(79, 209, 139, 0.55);
+  color: var(--low);
 }
 
 .incident-grid {
@@ -457,10 +495,12 @@ button:disabled {
   gap: 10px;
   color: #c8d9d2;
   line-height: 1.55;
+  min-width: 0;
 }
 
 .incident-detail p {
   margin: 0;
+  overflow-wrap: anywhere;
 }
 
 .filter-bar {
@@ -483,8 +523,143 @@ button:disabled {
   color: var(--accent);
 }
 
+.dashboard-side-panel {
+  align-self: stretch;
+}
+
+.distribution-list {
+  display: grid;
+  gap: 10px;
+}
+
+.distribution-row,
+.result-row,
+.incident-summary-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.distribution-row {
+  border: 1px solid rgba(33, 65, 57, 0.72);
+  border-radius: 8px;
+  background: rgba(7, 17, 15, 0.5);
+  padding: 11px 12px;
+}
+
+.distribution-row span,
+.result-row span {
+  color: var(--muted);
+}
+
+.incident-summary-strip {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+
+.incident-summary-strip span {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(15, 33, 29, 0.72);
+  color: #c8d9d2;
+  padding: 7px 11px;
+}
+
+.controls-panel {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(9, 22, 19, 0.94);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.16);
+  display: grid;
+  gap: 14px;
+  margin-bottom: 18px;
+  padding: 16px;
+}
+
+.sticky-controls {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+}
+
+.search-row {
+  display: grid;
+  align-items: end;
+  grid-template-columns: minmax(260px, 1fr) auto;
+  gap: 14px;
+}
+
+.filter-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(130px, 1fr));
+  gap: 12px;
+}
+
+.field {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.field input,
+.field select {
+  width: 100%;
+  min-height: 40px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #081411;
+  color: var(--text);
+  outline: none;
+  padding: 9px 11px;
+}
+
+.field input:focus,
+.field select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(57, 217, 138, 0.12);
+}
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.result-row {
+  flex-wrap: wrap;
+  border-top: 1px solid rgba(33, 65, 57, 0.72);
+  padding-top: 12px;
+}
+
 .report-panel {
   min-height: 360px;
+}
+
+.report-scope {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+
+.report-scope h2,
+.report-scope p {
+  margin: 0;
+}
+
+.report-scope h2 {
+  font-size: 1.05rem;
+}
+
+.report-scope p {
+  color: #c8d9d2;
+  line-height: 1.55;
 }
 
 .report-output {
@@ -494,6 +669,42 @@ button:disabled {
   font-family: inherit;
   font-size: 1rem;
   line-height: 1.65;
+}
+
+.report-blocks {
+  display: grid;
+  gap: 14px;
+  color: #dcebe5;
+  line-height: 1.65;
+}
+
+.report-blocks h2 {
+  border-top: 1px solid var(--line);
+  color: var(--info);
+  font-size: 1.05rem;
+  margin: 8px 0 0;
+  padding-top: 16px;
+}
+
+.report-blocks h2:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.report-blocks p {
+  margin: 0;
+}
+
+.report-blocks ul,
+.report-blocks ol {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding-left: 24px;
+}
+
+.report-blocks li {
+  padding-left: 4px;
 }
 
 @media (max-width: 1100px) {
@@ -512,7 +723,16 @@ button:disabled {
     margin-top: 22px;
   }
 
-  .metric-grid {
+  .metric-grid,
+  .dashboard-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dashboard-side-panel {
+    grid-column: 1 / -1;
+  }
+
+  .filter-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
@@ -532,14 +752,20 @@ button:disabled {
     justify-content: space-between;
   }
 
-  .split-grid,
+  .dashboard-grid,
   .metric-grid,
   .incident-grid,
-  .incident-grid.compact {
+  .incident-grid.compact,
+  .filter-grid,
+  .search-row {
     grid-template-columns: 1fr;
   }
 
   .nav-list {
     grid-template-columns: 1fr;
+  }
+
+  .sticky-controls {
+    position: static;
   }
 }

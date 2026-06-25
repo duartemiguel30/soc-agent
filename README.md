@@ -92,6 +92,8 @@ npm install
 npm run dev -- --host 0.0.0.0
 ```
 
+`frontend/next.config.ts` allows the VM dev origin `192.168.56.105` and rewrites `/backend/*` to FastAPI. Restart the Next dev server after changing this config.
+
 Open:
 
 ```text

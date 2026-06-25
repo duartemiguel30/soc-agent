@@ -1,46 +1,30 @@
 "use client";
 
 import { approveIncident, Incident, rejectIncident } from "@/lib/api";
+import {
+  formatIncidentDate,
+  getSeverity,
+  isPendingIncident,
+  labelValue,
+  shortIncidentId,
+} from "@/lib/incidents";
 import { useState } from "react";
 
 type IncidentListProps = {
   incidents: Incident[];
   onChanged?: () => Promise<void> | void;
   compact?: boolean;
+  detailed?: boolean;
+  onActionResult?: (message: string, type: "success" | "error") => void;
 };
 
-export function isPendingIncident(incident: Incident) {
-  const status = (incident.status || "").toLowerCase();
-  return status === "pending_human" || status === "pending";
-}
-
-export function isCriticalIncident(incident: Incident) {
-  const severity = (incident.severity || "").toLowerCase();
-  return severity.includes("critical") || (incident.rule_level ?? 0) >= 12;
-}
-
-export function isProcessedIncident(incident: Incident) {
-  const status = (incident.status || "").toLowerCase();
-  const decision = (incident.decision || "").toLowerCase();
-  return status.includes("processed") || status.includes("auto") || decision.includes("auto");
-}
-
-function formatDate(value?: string | null) {
-  if (!value) {
-    return "Unknown";
-  }
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-  return date.toLocaleString();
-}
-
-function shortId(id: string) {
-  return id.length > 8 ? id.slice(0, 8) : id;
-}
-
-export function IncidentList({ incidents, onChanged, compact = false }: IncidentListProps) {
+export function IncidentList({
+  incidents,
+  onChanged,
+  compact = false,
+  detailed = true,
+  onActionResult,
+}: IncidentListProps) {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -54,8 +38,11 @@ export function IncidentList({ incidents, onChanged, compact = false }: Incident
         await rejectIncident(id);
       }
       await onChanged?.();
+      onActionResult?.(`Incident ${action === "approve" ? "approved" : "rejected"}.`, "success");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Incident action failed");
+      const message = err instanceof Error ? err.message : "Incident action failed";
+      setError(message);
+      onActionResult?.(message, "error");
     } finally {
       setBusyId(null);
     }
@@ -70,18 +57,19 @@ export function IncidentList({ incidents, onChanged, compact = false }: Incident
       {error ? <div className="alert error">{error}</div> : null}
       {incidents.map((incident) => {
         const pending = isPendingIncident(incident);
+        const severity = getSeverity(incident);
         return (
           <article key={incident.id} className="incident-card">
             <div className="incident-head">
-              <div>
-                <span className="mono">#{shortId(incident.id)}</span>
+              <div className="incident-title-block">
+                <span className="mono">#{shortIncidentId(incident.id)}</span>
                 <h3>{incident.rule_description || `Rule ${incident.rule_id || "unknown"}`}</h3>
               </div>
               <div className="badge-row">
-                <span className={`badge ${isCriticalIncident(incident) ? "critical" : ""}`}>
-                  {incident.severity || "unknown"}
+                <span className={`badge severity-${severity}`}>
+                  {labelValue(incident.severity)}
                 </span>
-                <span className="badge">{incident.status || "no status"}</span>
+                <span className="badge">{labelValue(incident.status || "no status")}</span>
               </div>
             </div>
 
@@ -100,19 +88,19 @@ export function IncidentList({ incidents, onChanged, compact = false }: Incident
               </span>
               <span>
                 <strong>Confidence</strong>
-                {incident.confidence ?? "N/A"}%
+                {typeof incident.confidence === "number" ? `${incident.confidence}%` : "N/A"}
               </span>
               <span>
                 <strong>Decision</strong>
-                {incident.decision || "N/A"}
+                {labelValue(incident.decision || "N/A")}
               </span>
               <span>
                 <strong>Created</strong>
-                {formatDate(incident.created_at)}
+                {formatIncidentDate(incident.created_at)}
               </span>
             </div>
 
-            {!compact ? (
+            {!compact && detailed ? (
               <div className="incident-detail">
                 <p>
                   <strong>Reasoning:</strong> {incident.reasoning || "No reasoning returned."}

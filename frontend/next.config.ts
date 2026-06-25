@@ -6,6 +6,8 @@ const apiBaseUrl =
   "http://192.168.56.105:8000";
 
 const nextConfig: NextConfig = {
+  allowedDevOrigins: ["192.168.56.105"],
+
   async rewrites() {
     return [
       {

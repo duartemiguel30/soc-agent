@@ -3,13 +3,15 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/app/components/AppShell";
 import { AuthGuard } from "@/app/components/AuthGuard";
+import { IncidentList } from "@/app/components/IncidentList";
+import { Incident, listIncidents, listPendingIncidents } from "@/lib/api";
 import {
-  IncidentList,
-  isCriticalIncident,
+  getSeverity,
+  isCriticalSeverityIncident,
   isPendingIncident,
   isProcessedIncident,
-} from "@/app/components/IncidentList";
-import { Incident, listIncidents, listPendingIncidents } from "@/lib/api";
+  labelValue,
+} from "@/lib/incidents";
 
 export default function DashboardPage() {
   const [incidents, setIncidents] = useState<Incident[]>([]);
@@ -45,7 +47,7 @@ export default function DashboardPage() {
     return {
       total: incidents.length,
       pending: pending.length,
-      critical: incidents.filter(isCriticalIncident).length,
+      criticalSeverity: incidents.filter(isCriticalSeverityIncident).length,
       approved: incidents.filter((incident) => incident.status === "approved").length,
       rejected: incidents.filter((incident) => incident.status === "rejected").length,
       processed: incidents.filter(isProcessedIncident).length,
@@ -53,6 +55,13 @@ export default function DashboardPage() {
   }, [incidents, pending]);
 
   const recent = incidents.slice(0, 5);
+  const severityDistribution = useMemo(() => {
+    const distribution = { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 };
+    incidents.forEach((incident) => {
+      distribution[getSeverity(incident)] += 1;
+    });
+    return distribution;
+  }, [incidents]);
 
   return (
     <AuthGuard>
@@ -84,8 +93,8 @@ export default function DashboardPage() {
                 <strong>{counts.pending}</strong>
               </div>
               <div className="metric-card">
-                <span>Critical</span>
-                <strong>{counts.critical}</strong>
+                <span>Critical severity</span>
+                <strong>{counts.criticalSeverity}</strong>
               </div>
               <div className="metric-card">
                 <span>Approved</span>
@@ -101,7 +110,7 @@ export default function DashboardPage() {
               </div>
             </section>
 
-            <div className="split-grid">
+            <div className="dashboard-grid">
               <section className="panel">
                 <div className="section-head">
                   <h2>Pending Review</h2>
@@ -110,7 +119,7 @@ export default function DashboardPage() {
                 {loading ? (
                   <div className="loading-panel">Loading pending incidents...</div>
                 ) : (
-                  <IncidentList incidents={pending.slice(0, 5)} onChanged={refresh} compact />
+                  <IncidentList incidents={pending.slice(0, 5)} onChanged={refresh} compact detailed={false} />
                 )}
               </section>
               <section className="panel">
@@ -121,8 +130,22 @@ export default function DashboardPage() {
                 {loading ? (
                   <div className="loading-panel">Loading recent incidents...</div>
                 ) : (
-                  <IncidentList incidents={recent} onChanged={refresh} compact />
+                  <IncidentList incidents={recent} onChanged={refresh} compact detailed={false} />
                 )}
+              </section>
+              <section className="panel dashboard-side-panel">
+                <div className="section-head">
+                  <h2>Severity Distribution</h2>
+                  <span>{incidents.length} total</span>
+                </div>
+                <div className="distribution-list">
+                  {Object.entries(severityDistribution).map(([severity, count]) => (
+                    <div key={severity} className="distribution-row">
+                      <span>{labelValue(severity)}</span>
+                      <strong>{count}</strong>
+                    </div>
+                  ))}
+                </div>
               </section>
             </div>
           </main>
