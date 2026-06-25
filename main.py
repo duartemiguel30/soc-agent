@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import secrets
@@ -6,12 +7,21 @@ from datetime import datetime, timedelta
 
 from agent.graph import build_graph
 from db.database import Base, engine, get_db
-from db.models import AdminSession, AdminUser, Incident
+from db.models import (
+    AdminSession,
+    AdminUser,
+    Incident,
+    IncidentActionEvent,
+    IncidentNote,
+    IncidentPlaybook,
+    IncidentPlaybookStep,
+)
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from playbooks.service import get_or_create_playbook, log_action_event
 from security import hash_session_token, verify_password
 from sqlalchemy.orm import Session
 
@@ -32,7 +42,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[FRONTEND_ORIGIN],
     allow_credentials=True,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
     allow_headers=["Content-Type"],
 )
 
@@ -40,6 +50,14 @@ app.add_middleware(
 class LoginRequest(BaseModel):
     username: str
     password: str
+
+
+class PlaybookStepUpdate(BaseModel):
+    status: str
+
+
+class NoteCreate(BaseModel):
+    body: str
 
 
 def utc_now() -> datetime:
@@ -74,6 +92,117 @@ def clear_session_cookie(response: Response) -> None:
         samesite="lax",
         path="/",
     )
+
+
+def current_admin_username(admin: dict | None) -> str | None:
+    if not admin:
+        return None
+    user = admin.get("user")
+    return getattr(user, "username", None)
+
+
+def get_incident_or_404(db: Session, incident_id: str) -> Incident:
+    incident = db.query(Incident).filter(Incident.id == incident_id).first()
+    if not incident:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Incident not found")
+    return incident
+
+
+def serialize_incident(incident: Incident) -> dict:
+    return {
+        "id": incident.id,
+        "agent_name": incident.agent_name,
+        "rule_id": incident.rule_id,
+        "rule_description": incident.rule_description,
+        "rule_level": incident.rule_level,
+        "mitre_technique": incident.mitre_technique,
+        "classification": incident.classification,
+        "confidence": incident.confidence,
+        "severity": incident.severity,
+        "reasoning": incident.reasoning,
+        "recommended_action": incident.recommended_action,
+        "decision": incident.decision,
+        "status": incident.status,
+        "created_at": incident.created_at,
+    }
+
+
+def serialize_playbook(playbook: IncidentPlaybook, steps: list[IncidentPlaybookStep]) -> dict:
+    return {
+        "id": playbook.id,
+        "incident_id": playbook.incident_id,
+        "template_key": playbook.template_key,
+        "title": playbook.title,
+        "summary": playbook.summary,
+        "status": playbook.status,
+        "created_at": playbook.created_at,
+        "updated_at": playbook.updated_at,
+        "completed_at": playbook.completed_at,
+        "steps": [
+            {
+                "id": step.id,
+                "playbook_id": step.playbook_id,
+                "step_order": step.step_order,
+                "title": step.title,
+                "description": step.description,
+                "status": step.status,
+                "is_required": step.is_required,
+                "completed_at": step.completed_at,
+                "completed_by": step.completed_by,
+                "created_at": step.created_at,
+                "updated_at": step.updated_at,
+            }
+            for step in steps
+        ],
+    }
+
+
+def serialize_note(note: IncidentNote) -> dict:
+    return {
+        "id": note.id,
+        "incident_id": note.incident_id,
+        "author": note.author,
+        "body": note.body,
+        "created_at": note.created_at,
+    }
+
+
+def serialize_action_event(event: IncidentActionEvent) -> dict:
+    return {
+        "id": event.id,
+        "incident_id": event.incident_id,
+        "actor": event.actor,
+        "event_type": event.event_type,
+        "message": event.message,
+        "metadata_json": event.metadata_json,
+        "created_at": event.created_at,
+    }
+
+
+def update_playbook_status(db: Session, playbook_id: int) -> None:
+    playbook = db.query(IncidentPlaybook).filter(IncidentPlaybook.id == playbook_id).first()
+    if not playbook:
+        return
+    steps = db.query(IncidentPlaybookStep).filter(IncidentPlaybookStep.playbook_id == playbook_id).all()
+    statuses = {step.status for step in steps}
+    if steps and statuses.issubset({"done", "skipped"}):
+        playbook.status = "completed"
+        if not playbook.completed_at:
+            playbook.completed_at = utc_now()
+    elif any(step.status == "in_progress" for step in steps):
+        playbook.status = "in_progress"
+        playbook.completed_at = None
+    else:
+        playbook.status = "open"
+        playbook.completed_at = None
+
+
+def action_event_source(event: IncidentActionEvent) -> str:
+    if event.event_type == "ai_analysis_completed":
+        return "ai"
+    if event.actor and event.actor != "system":
+        return "analyst"
+    return "system"
 
 
 def get_current_admin(request: Request, db: Session = Depends(get_db)) -> dict:
@@ -187,6 +316,26 @@ async def receive_alert(alert: dict, db: Session = Depends(get_db)):
         status=result.get("status"),
     )
     db.add(incident)
+    log_action_event(
+        db,
+        incident_id,
+        "system",
+        "incident_created",
+        f"Incident created from Wazuh alert rule {result.get('rule_id') or 'unknown'}.",
+    )
+    log_action_event(
+        db,
+        incident_id,
+        "system",
+        "ai_analysis_completed",
+        "AI analysis completed and stored with the incident.",
+        {
+            "classification": result.get("classification"),
+            "confidence": result.get("confidence"),
+            "severity": result.get("severity"),
+            "decision": result.get("decision"),
+        },
+    )
     db.commit()
 
     logger.info(
@@ -217,6 +366,267 @@ def list_pending(db: Session = Depends(get_db), admin: dict = Depends(get_curren
     return db.query(Incident).filter(Incident.status == "pending_human").all()
 
 
+@app.get("/incidents/{incident_id}")
+def get_incident_detail(
+    incident_id: str,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    """Return a single incident with stored AI analysis fields."""
+    return serialize_incident(get_incident_or_404(db, incident_id))
+
+
+@app.get("/incidents/{incident_id}/playbook")
+def get_incident_playbook(
+    incident_id: str,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    """Return or lazily create the deterministic manual response playbook for an incident."""
+    incident = get_incident_or_404(db, incident_id)
+    playbook, steps, _created = get_or_create_playbook(db, incident, current_admin_username(admin))
+    return serialize_playbook(playbook, steps)
+
+
+@app.patch("/playbook/steps/{step_id}")
+def update_playbook_step(
+    step_id: int,
+    payload: PlaybookStepUpdate,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    """Update a manual playbook checklist step status."""
+    accepted_statuses = {"todo", "in_progress", "done", "skipped"}
+    if payload.status not in accepted_statuses:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid step status",
+        )
+
+    step = db.query(IncidentPlaybookStep).filter(IncidentPlaybookStep.id == step_id).first()
+    if not step:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Playbook step not found")
+
+    playbook = db.query(IncidentPlaybook).filter(IncidentPlaybook.id == step.playbook_id).first()
+    if not playbook:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Playbook not found")
+
+    actor = current_admin_username(admin)
+    previous_status = step.status
+    step.status = payload.status
+    if payload.status == "done":
+        step.completed_at = utc_now()
+        step.completed_by = actor
+    elif payload.status in {"todo", "in_progress", "skipped"}:
+        step.completed_at = None
+        step.completed_by = None
+
+    update_playbook_status(db, step.playbook_id)
+    log_action_event(
+        db,
+        playbook.incident_id,
+        actor,
+        "playbook_step_updated",
+        f"Playbook step {step.step_order} changed from {previous_status} to {payload.status}: {step.title}",
+        {
+            "step_id": step.id,
+            "playbook_id": playbook.id,
+            "previous_status": previous_status,
+            "status": payload.status,
+        },
+    )
+    db.commit()
+    db.refresh(step)
+    return {
+        "id": step.id,
+        "playbook_id": step.playbook_id,
+        "step_order": step.step_order,
+        "title": step.title,
+        "description": step.description,
+        "status": step.status,
+        "is_required": step.is_required,
+        "completed_at": step.completed_at,
+        "completed_by": step.completed_by,
+        "created_at": step.created_at,
+        "updated_at": step.updated_at,
+    }
+
+
+@app.post("/incidents/{incident_id}/notes")
+def add_incident_note(
+    incident_id: str,
+    payload: NoteCreate,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    """Add an analyst note to an incident."""
+    get_incident_or_404(db, incident_id)
+    body = payload.body.strip()
+    if not body:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Note body is required")
+
+    actor = current_admin_username(admin)
+    note = IncidentNote(incident_id=incident_id, author=actor, body=body)
+    db.add(note)
+    db.flush()
+    log_action_event(
+        db,
+        incident_id,
+        actor,
+        "note_added",
+        "Analyst note added.",
+        {"note_id": note.id},
+    )
+    db.commit()
+    db.refresh(note)
+    return serialize_note(note)
+
+
+@app.get("/incidents/{incident_id}/notes")
+def list_incident_notes(
+    incident_id: str,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    """Return analyst notes oldest first for stable chronological reading."""
+    get_incident_or_404(db, incident_id)
+    notes = (
+        db.query(IncidentNote)
+        .filter(IncidentNote.incident_id == incident_id)
+        .order_by(IncidentNote.created_at.asc(), IncidentNote.id.asc())
+        .all()
+    )
+    return [serialize_note(note) for note in notes]
+
+
+@app.get("/incidents/{incident_id}/actions")
+def list_incident_actions(
+    incident_id: str,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    """Return historical action events oldest first."""
+    get_incident_or_404(db, incident_id)
+    events = (
+        db.query(IncidentActionEvent)
+        .filter(IncidentActionEvent.incident_id == incident_id)
+        .order_by(IncidentActionEvent.created_at.asc(), IncidentActionEvent.id.asc())
+        .all()
+    )
+    return [serialize_action_event(event) for event in events]
+
+
+@app.get("/incidents/{incident_id}/timeline")
+def get_incident_timeline(
+    incident_id: str,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    """Return chronological timeline events, using action events first.
+
+    Notes are represented by note_added action events. Synthetic entries are only
+    fallback records for old incidents that predate action-event logging.
+    """
+    incident = get_incident_or_404(db, incident_id)
+    events = (
+        db.query(IncidentActionEvent)
+        .filter(IncidentActionEvent.incident_id == incident_id)
+        .order_by(IncidentActionEvent.created_at.asc(), IncidentActionEvent.id.asc())
+        .all()
+    )
+    existing_event_types = {event.event_type for event in events}
+
+    timeline = [
+        {
+            "timestamp": event.created_at,
+            "source": action_event_source(event),
+            "event_type": event.event_type,
+            "actor": event.actor,
+            "message": event.message,
+            "metadata_json": event.metadata_json,
+        }
+        for event in events
+    ]
+
+    if "incident_created" not in existing_event_types:
+        timeline.append(
+            {
+                "timestamp": incident.created_at,
+                "source": "system",
+                "event_type": "incident_created",
+                "actor": "system",
+                "message": f"Incident created for rule {incident.rule_id or 'unknown'}.",
+            }
+        )
+
+    if (
+        "ai_analysis_completed" not in existing_event_types
+        and (incident.classification or incident.reasoning or incident.recommended_action)
+    ):
+        timeline.append(
+            {
+                "timestamp": incident.created_at,
+                "source": "ai",
+                "event_type": "ai_analysis_completed",
+                "actor": "system",
+                "message": "AI analysis fields are available for this incident.",
+            }
+        )
+
+    if "playbook_created" not in existing_event_types:
+        playbook = (
+            db.query(IncidentPlaybook)
+            .filter(IncidentPlaybook.incident_id == incident_id)
+            .order_by(IncidentPlaybook.created_at.asc())
+            .first()
+        )
+    else:
+        playbook = None
+    if playbook:
+        timeline.append(
+            {
+                "timestamp": playbook.created_at,
+                "source": "system",
+                "event_type": "playbook_created",
+                "actor": "system",
+                "message": f"Manual playbook available: {playbook.title}",
+            }
+        )
+
+    logged_note_ids = set()
+    for event in events:
+        if event.event_type != "note_added" or not event.metadata_json:
+            continue
+        try:
+            metadata = json.loads(event.metadata_json)
+        except json.JSONDecodeError:
+            continue
+        note_id = metadata.get("note_id")
+        if note_id is not None:
+            logged_note_ids.add(note_id)
+
+    notes_without_events = (
+        db.query(IncidentNote)
+        .filter(IncidentNote.incident_id == incident_id)
+        .order_by(IncidentNote.created_at.asc(), IncidentNote.id.asc())
+        .all()
+    )
+    for note in notes_without_events:
+        if note.id in logged_note_ids:
+            continue
+        timeline.append(
+            {
+                "timestamp": note.created_at,
+                "source": "analyst",
+                "event_type": "note_added",
+                "actor": note.author,
+                "message": note.body,
+            }
+        )
+
+    return sorted(timeline, key=lambda item: item["timestamp"])
+
+
 @app.post("/incidents/{incident_id}/approve")
 def approve_incident(
     incident_id: str,
@@ -228,6 +638,14 @@ def approve_incident(
     if not incident:
         return {"error": "Incident not found"}
     incident.status = "approved"
+    log_action_event(
+        db,
+        incident_id,
+        current_admin_username(admin),
+        "incident_approved",
+        "Incident approved by analyst.",
+        {"action": incident.recommended_action},
+    )
     db.commit()
     logger.info(f"Incident {incident_id} APPROVED by human analyst")
     return {"incident_id": incident_id, "status": "approved", "action": incident.recommended_action}
@@ -244,6 +662,13 @@ def reject_incident(
     if not incident:
         return {"error": "Incident not found"}
     incident.status = "rejected"
+    log_action_event(
+        db,
+        incident_id,
+        current_admin_username(admin),
+        "incident_rejected",
+        "Incident rejected by analyst and closed as false positive.",
+    )
     db.commit()
     logger.info(f"Incident {incident_id} REJECTED by human analyst - closed as false positive")
     return {"incident_id": incident_id, "status": "rejected"}

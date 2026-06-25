@@ -8,6 +8,7 @@ import {
   labelValue,
   shortIncidentId,
 } from "@/lib/incidents";
+import Link from "next/link";
 import { useState } from "react";
 
 type IncidentListProps = {
@@ -16,6 +17,7 @@ type IncidentListProps = {
   compact?: boolean;
   detailed?: boolean;
   onActionResult?: (message: string, type: "success" | "error") => void;
+  linkToDetail?: boolean;
 };
 
 export function IncidentList({
@@ -24,6 +26,7 @@ export function IncidentList({
   compact = false,
   detailed = true,
   onActionResult,
+  linkToDetail = true,
 }: IncidentListProps) {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -63,7 +66,15 @@ export function IncidentList({
             <div className="incident-head">
               <div className="incident-title-block">
                 <span className="mono">#{shortIncidentId(incident.id)}</span>
-                <h3>{incident.rule_description || `Rule ${incident.rule_id || "unknown"}`}</h3>
+                <h3>
+                  {linkToDetail ? (
+                    <Link href={`/incidents/${incident.id}`}>
+                      {incident.rule_description || `Rule ${incident.rule_id || "unknown"}`}
+                    </Link>
+                  ) : (
+                    incident.rule_description || `Rule ${incident.rule_id || "unknown"}`
+                  )}
+                </h3>
               </div>
               <div className="badge-row">
                 <span className={`badge severity-${severity}`}>

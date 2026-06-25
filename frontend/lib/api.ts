@@ -29,6 +29,60 @@ export type ReportResponse = {
   incidents_analyzed?: number;
 };
 
+export type PlaybookStep = {
+  id: number;
+  playbook_id: number;
+  step_order: number;
+  title: string;
+  description?: string | null;
+  status: "todo" | "in_progress" | "done" | "skipped";
+  is_required: boolean;
+  completed_at?: string | null;
+  completed_by?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type IncidentPlaybook = {
+  id: number;
+  incident_id: string;
+  template_key: string;
+  title: string;
+  summary?: string | null;
+  status: string;
+  created_at?: string | null;
+  updated_at?: string | null;
+  completed_at?: string | null;
+  steps: PlaybookStep[];
+};
+
+export type IncidentNote = {
+  id: number;
+  incident_id: string;
+  author?: string | null;
+  body: string;
+  created_at?: string | null;
+};
+
+export type IncidentActionEvent = {
+  id: number;
+  incident_id: string;
+  actor?: string | null;
+  event_type: string;
+  message: string;
+  metadata_json?: string | null;
+  created_at?: string | null;
+};
+
+export type TimelineEvent = {
+  timestamp?: string | null;
+  source: "system" | "ai" | "analyst" | string;
+  event_type: string;
+  actor?: string | null;
+  message: string;
+  metadata_json?: string | null;
+};
+
 export class ApiError extends Error {
   status: number;
 
@@ -95,6 +149,10 @@ export function listIncidents() {
   return request<Incident[]>("/incidents");
 }
 
+export function getIncident(id: string) {
+  return request<Incident>(`/incidents/${id}`);
+}
+
 export function listPendingIncidents() {
   return request<Incident[]>("/incidents/pending");
 }
@@ -113,4 +171,34 @@ export function rejectIncident(id: string) {
 
 export function generateReport() {
   return request<ReportResponse>("/report");
+}
+
+export function getIncidentPlaybook(id: string) {
+  return request<IncidentPlaybook>(`/incidents/${id}/playbook`);
+}
+
+export function updatePlaybookStep(stepId: number, status: PlaybookStep["status"]) {
+  return request<PlaybookStep>(`/playbook/steps/${stepId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ status }),
+  });
+}
+
+export function addIncidentNote(id: string, body: string) {
+  return request<IncidentNote>(`/incidents/${id}/notes`, {
+    method: "POST",
+    body: JSON.stringify({ body }),
+  });
+}
+
+export function listIncidentNotes(id: string) {
+  return request<IncidentNote[]>(`/incidents/${id}/notes`);
+}
+
+export function getIncidentTimeline(id: string) {
+  return request<TimelineEvent[]>(`/incidents/${id}/timeline`);
+}
+
+export function listIncidentActions(id: string) {
+  return request<IncidentActionEvent[]>(`/incidents/${id}/actions`);
 }

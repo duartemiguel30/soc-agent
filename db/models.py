@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.sql import func
 from db.database import Base
 
@@ -44,3 +44,58 @@ class AdminSession(Base):
     revoked_at = Column(DateTime, nullable=True)
     user_agent = Column(String, nullable=True)
     client_ip = Column(String, nullable=True)
+
+
+class IncidentPlaybook(Base):
+    __tablename__ = "incident_playbooks"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    incident_id = Column(String, ForeignKey("incidents.id"), unique=True, index=True, nullable=False)
+    template_key = Column(String, nullable=False)
+    title = Column(String, nullable=False)
+    summary = Column(Text, nullable=True)
+    status = Column(String, default="open", nullable=False)
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
+    completed_at = Column(DateTime, nullable=True)
+
+
+class IncidentPlaybookStep(Base):
+    __tablename__ = "incident_playbook_steps"
+    __table_args__ = (
+        UniqueConstraint("playbook_id", "step_order", name="uq_incident_playbook_step_order"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    playbook_id = Column(Integer, ForeignKey("incident_playbooks.id"), index=True, nullable=False)
+    step_order = Column(Integer, nullable=False)
+    title = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    status = Column(String, default="todo", nullable=False)
+    is_required = Column(Boolean, default=True, nullable=False)
+    completed_at = Column(DateTime, nullable=True)
+    completed_by = Column(String, nullable=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class IncidentNote(Base):
+    __tablename__ = "incident_notes"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    incident_id = Column(String, ForeignKey("incidents.id"), index=True, nullable=False)
+    author = Column(String, nullable=True)
+    body = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+
+
+class IncidentActionEvent(Base):
+    __tablename__ = "incident_action_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    incident_id = Column(String, ForeignKey("incidents.id"), index=True, nullable=False)
+    actor = Column(String, nullable=True)
+    event_type = Column(String, nullable=False)
+    message = Column(Text, nullable=False)
+    metadata_json = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False)

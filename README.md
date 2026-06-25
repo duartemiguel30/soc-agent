@@ -63,6 +63,13 @@ Protected backend routes:
 
 - `GET /incidents`
 - `GET /incidents/pending`
+- `GET /incidents/{id}`
+- `GET /incidents/{id}/playbook`
+- `PATCH /playbook/steps/{step_id}`
+- `GET /incidents/{id}/notes`
+- `POST /incidents/{id}/notes`
+- `GET /incidents/{id}/timeline`
+- `GET /incidents/{id}/actions`
 - `POST /incidents/{id}/approve`
 - `POST /incidents/{id}/reject`
 - `GET /report`
@@ -74,6 +81,37 @@ Public backend routes:
 - `GET /` serving the legacy fallback dashboard
 
 The Wazuh webhook remains public because Wazuh calls it directly.
+
+## Manual Incident Response Playbooks
+
+Manual playbooks give analysts a deterministic checklist for each incident. They do not call Gemini and do not depend on live AI output for their steps. Playbooks are created lazily: the first request to `GET /incidents/{id}/playbook` creates one from a template if the incident does not already have one.
+
+Template selection uses existing incident fields:
+
+- Credential dumping / LSASS: MITRE `T1003` or `T1003.001`, rule IDs `100001`-`100003`, or descriptions mentioning LSASS, Mimikatz, or credential dumping.
+- Brute force: MITRE `T1110` or `T1110.001`, or descriptions mentioning brute force or multiple failed logins.
+- New user / persistence: MITRE `T1136` or `T1136.001`, rule ID `100005`, or descriptions mentioning new user/account creation.
+- PowerShell encoded command / script execution: MITRE `T1059` or `T1059.001`, rule ID `100006`, or descriptions mentioning PowerShell or encoded command.
+- Scheduled task persistence: MITRE `T1053` or `T1053.005`, rule ID `100007`, or descriptions mentioning scheduled task.
+- Generic suspicious alert: fallback for all other alerts.
+
+Each playbook has ordered checklist steps with statuses `todo`, `in_progress`, `done`, and `skipped`. Analysts can add notes, and the backend records historical `incident_action_events` for incident-specific actions: playbook creation, step updates, notes, approvals, and rejections. The timeline uses these action events as its primary source; synthetic incident/AI/playbook fallback entries are only added for older incidents that do not have equivalent action events. Notes appear in the timeline through `note_added` action events; old notes without a corresponding action event are added as fallback timeline entries without duplicating logged notes. The Notes panel always shows full note bodies. The global `/report` endpoint remains read-only and does not write incident history. The incident detail page shows the playbook, analyst notes, combined timeline, and action history.
+
+After pulling this code onto the `logger` VM, create or verify the new runtime tables:
+
+```bash
+cd ~/soc-agent
+source venv/bin/activate
+python - <<'PY'
+from db.database import engine
+from db.models import Base
+print(sorted(Base.metadata.tables.keys()))
+Base.metadata.create_all(bind=engine)
+print("Database tables created/verified.")
+PY
+```
+
+Codex/code generation only updates repository code. It does not create real runtime SQLite tables or insert real rows on the `logger` VM.
 
 ## Frontend
 

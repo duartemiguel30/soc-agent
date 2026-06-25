@@ -707,6 +707,161 @@ button:disabled {
   padding-left: 4px;
 }
 
+.detail-grid {
+  display: grid;
+  align-items: start;
+  grid-template-columns: minmax(0, 0.95fr) minmax(360px, 1.25fr);
+  gap: 18px;
+}
+
+.detail-stack {
+  display: grid;
+  gap: 18px;
+}
+
+.detail-list {
+  display: grid;
+  gap: 10px;
+}
+
+.detail-row {
+  display: grid;
+  gap: 4px;
+  border: 1px solid rgba(33, 65, 57, 0.72);
+  border-radius: 8px;
+  background: rgba(7, 17, 15, 0.5);
+  padding: 10px;
+}
+
+.detail-row span {
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.detail-row strong,
+.detail-row p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.playbook-step {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) 170px;
+  gap: 12px;
+  align-items: start;
+  border: 1px solid rgba(33, 65, 57, 0.72);
+  border-radius: 8px;
+  background: rgba(7, 17, 15, 0.5);
+  padding: 12px;
+}
+
+.step-order {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--accent);
+  font-weight: 800;
+}
+
+.step-body {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.step-body h3,
+.step-body p {
+  margin: 0;
+}
+
+.step-body h3 {
+  font-size: 0.98rem;
+  overflow-wrap: anywhere;
+}
+
+.step-meta {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.step-status-select {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #081411;
+  color: var(--text);
+  padding: 8px;
+}
+
+.note-form {
+  display: grid;
+  gap: 10px;
+}
+
+.note-form textarea {
+  min-height: 110px;
+  width: 100%;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #081411;
+  color: var(--text);
+  padding: 11px;
+}
+
+.note-card,
+.timeline-entry,
+.action-entry {
+  border: 1px solid rgba(33, 65, 57, 0.72);
+  border-radius: 8px;
+  background: rgba(7, 17, 15, 0.5);
+  padding: 12px;
+}
+
+.note-card p,
+.timeline-entry p,
+.action-entry p {
+  margin: 6px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.timeline-list,
+.action-list,
+.notes-list,
+.playbook-list {
+  display: grid;
+  gap: 10px;
+}
+
+.timeline-entry {
+  border-left: 3px solid var(--info);
+}
+
+.timeline-entry.source-ai {
+  border-left-color: var(--accent);
+}
+
+.timeline-entry.source-analyst {
+  border-left-color: var(--warning);
+}
+
+.entry-meta {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.section-subtitle {
+  color: var(--muted);
+  line-height: 1.55;
+  margin: -6px 0 14px;
+}
+
 @media (max-width: 1100px) {
   .app-shell {
     grid-template-columns: 1fr;
@@ -753,6 +908,7 @@ button:disabled {
   }
 
   .dashboard-grid,
+  .detail-grid,
   .metric-grid,
   .incident-grid,
   .incident-grid.compact,
@@ -767,5 +923,13 @@ button:disabled {
 
   .sticky-controls {
     position: static;
+  }
+
+  .playbook-step {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .step-status-select {
+    grid-column: 1 / -1;
   }
 }
