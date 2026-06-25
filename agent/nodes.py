@@ -1,5 +1,6 @@
 import time
 import json
+import subprocess
 import logging
 from langchain_google_genai import ChatGoogleGenerativeAI
 from agent.state import AlertState
@@ -117,10 +118,30 @@ def route_decision(state: AlertState) -> str:
     """LangGraph router — devolve o nome do próximo nó."""
     return state["decision"]
 
+
 def auto_response(state: AlertState) -> AlertState:
     """Resposta automática para alertas de alta confiança."""
     logger.info(f"AUTO RESPONSE: {state['recommended_action']} for {state['agent_name']}")
-    # Aqui vão as actions futuras (bloquear IP, etc.)
+    
+    # Tenta extrair IP do alerta e bloquear
+    try:
+        raw = state.get("raw_alert", {})
+        src_ip = (
+            raw.get("data", {}).get("srcip") or
+            raw.get("data", {}).get("win", {}).get("eventdata", {}).get("sourceIp")
+        )
+        if src_ip and src_ip not in ["127.0.0.1", "::1"]:
+            result = subprocess.run(
+                ["sudo", "iptables", "-A", "INPUT", "-s", src_ip, "-j", "DROP"],
+                capture_output=True, text=True
+            )
+            if result.returncode == 0:
+                logger.info(f"BLOCKED IP: {src_ip}")
+            else:
+                logger.warning(f"Failed to block IP {src_ip}: {result.stderr}")
+    except Exception as e:
+        logger.error(f"block_ip failed: {e}")
+
     return {**state, "status": "processed"}
 
 def human_review(state: AlertState) -> AlertState:

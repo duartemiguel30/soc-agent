@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SOC AI Agent Dashboard</title>
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Segoe UI', sans-serif; background: #0a0e1a; color: #e2e8f0; }
+    .navbar { background: #0d1b2a; padding: 1rem 2rem; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #1e3a5f; }
+    .navbar h1 { color: #00d4ff; font-size: 1.2rem; }
+    .navbar-right { display: flex; gap: 1rem; align-items: center; }
+    .badge { background: #ef4444; color: white; border-radius: 50%; padding: 2px 8px; font-size: 0.75rem; margin-left: 8px; }
+    .container { padding: 2rem; max-width: 1400px; margin: 0 auto; }
+    .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; margin-bottom: 2rem; }
+    .stat-card { background: #111827; border-radius: 8px; padding: 1.5rem; border-left: 4px solid; }
+    .stat-card.pending { border-color: #f59e0b; }
+    .stat-card.approved { border-color: #10b981; }
+    .stat-card.rejected { border-color: #6b7280; }
+    .stat-card.processed { border-color: #00d4ff; }
+    .stat-card h3 { font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.5rem; }
+    .stat-card p { font-size: 2rem; font-weight: bold; }
+    .tabs { display: flex; gap: 1rem; margin-bottom: 1.5rem; flex-wrap: wrap; }
+    .tab { padding: 0.5rem 1.5rem; border-radius: 6px; cursor: pointer; border: 1px solid #1e3a5f; background: transparent; color: #94a3b8; }
+    .tab.active { background: #00d4ff; color: #0a0e1a; border-color: #00d4ff; font-weight: bold; }
+    .incident-card { background: #111827; border-radius: 8px; padding: 1.5rem; margin-bottom: 1rem; border: 1px solid #1e3a5f; }
+    .incident-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1rem; }
+    .incident-title { font-weight: bold; font-size: 1rem; margin-bottom: 0.25rem; }
+    .incident-meta { font-size: 0.8rem; color: #94a3b8; }
+    .badges { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.5rem; }
+    .pill { padding: 2px 10px; border-radius: 20px; font-size: 0.75rem; font-weight: bold; }
+    .pill.critical { background: #7f1d1d; color: #ef4444; }
+    .pill.high { background: #7c2d12; color: #f97316; }
+    .pill.medium { background: #713f12; color: #f59e0b; }
+    .pill.low { background: #064e3b; color: #10b981; }
+    .pill.true_positive { background: #7f1d1d; color: #ef4444; }
+    .pill.false_positive { background: #064e3b; color: #10b981; }
+    .pill.unknown { background: #1e3a5f; color: #94a3b8; }
+    .confidence { font-size: 1.5rem; font-weight: bold; }
+    .confidence.high { color: #10b981; }
+    .confidence.medium { color: #f59e0b; }
+    .confidence.low { color: #ef4444; }
+    .reasoning { background: #0d1b2a; border-radius: 6px; padding: 1rem; margin: 1rem 0; font-size: 0.85rem; color: #94a3b8; border-left: 3px solid #1e3a5f; }
+    .action-text { font-size: 0.85rem; color: #e2e8f0; margin: 0.5rem 0; }
+    .buttons { display: flex; gap: 0.75rem; margin-top: 1rem; }
+    .btn { padding: 0.5rem 1.5rem; border-radius: 6px; cursor: pointer; border: none; font-weight: bold; font-size: 0.85rem; }
+    .btn.approve { background: #10b981; color: white; }
+    .btn.reject { background: #374151; color: #e2e8f0; }
+    .btn.report { background: #1e3a5f; color: #00d4ff; border: 1px solid #00d4ff; }
+    .btn.refresh { background: #1e3a5f; color: #00d4ff; border: 1px solid #00d4ff; }
+    .btn:hover { opacity: 0.85; }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .status-badge { padding: 3px 10px; border-radius: 4px; font-size: 0.75rem; font-weight: bold; }
+    .status-badge.pending_human { background: #713f12; color: #f59e0b; }
+    .status-badge.approved { background: #064e3b; color: #10b981; }
+    .status-badge.rejected { background: #374151; color: #9ca3af; }
+    .status-badge.processed { background: #1e3a5f; color: #00d4ff; }
+    .empty { text-align: center; padding: 3rem; color: #94a3b8; }
+    .mitre { font-size: 0.75rem; color: #00d4ff; font-family: monospace; margin-top: 4px; }
+    .report-container { background: #111827; border-radius: 8px; padding: 2rem; border: 1px solid #1e3a5f; margin-bottom: 2rem; }
+    .report-container h2 { color: #00d4ff; margin-bottom: 1rem; font-size: 1rem; }
+    .report-text { font-size: 0.85rem; line-height: 1.7; color: #e2e8f0; white-space: pre-wrap; }
+    .report-text h3, .report-text h4 { color: #00d4ff; margin: 1rem 0 0.5rem; }
+    .loading-text { color: #94a3b8; font-style: italic; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect } = React;
+
+function formatReport(text) {
+  return text
+    .replace(/#### \*\*(.*?)\*\*/g, '<h4 style="color:#00d4ff;margin:1rem 0 0.5rem">$1</h4>')
+    .replace(/### \*\*(.*?)\*\*/g, '<h3 style="color:#00d4ff;margin:1.2rem 0 0.5rem">$1</h3>')
+    .replace(/#### (.*?)(\n|$)/g, '<h4 style="color:#00d4ff;margin:1rem 0 0.5rem">$1</h4>')
+    .replace(/### (.*?)(\n|$)/g, '<h3 style="color:#00d4ff;margin:1.2rem 0 0.5rem">$1</h3>')
+    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.*?)\*/g, '<em>$1</em>')
+    .replace(/^\s*\*\s+/gm, '• ')
+    .replace(/^\s*\d+\.\s+/gm, (m) => `<br/>${m}`)
+    .replace(/\n/g, '<br/>');
+}
+function App() {
+  const [incidents, setIncidents] = useState([]);
+  const [tab, setTab] = useState('pending');
+  const [loading, setLoading] = useState(true);
+  const [report, setReport] = useState(null);
+  const [reportLoading, setReportLoading] = useState(false);
+
+  const fetchIncidents = async () => {
+    try {
+      const res = await fetch('/incidents');
+      const data = await res.json();
+      setIncidents(data);
+    } catch(e) { console.error(e); }
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    fetchIncidents();
+    const interval = setInterval(fetchIncidents, 10000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const approve = async (id) => {
+    await fetch(`/incidents/${id}/approve`, { method: 'POST' });
+    fetchIncidents();
+  };
+
+  const reject = async (id) => {
+    await fetch(`/incidents/${id}/reject`, { method: 'POST' });
+    fetchIncidents();
+  };
+
+  const generateReport = async () => {
+    setReportLoading(true);
+    setTab('report');
+    try {
+      const res = await fetch('/report');
+      const data = await res.json();
+      setReport(data);
+    } catch(e) { console.error(e); }
+    setReportLoading(false);
+  };
+
+  const pending = incidents.filter(i => i.status === 'pending_human');
+  const approved = incidents.filter(i => i.status === 'approved');
+  const rejected = incidents.filter(i => i.status === 'rejected');
+  const processed = incidents.filter(i => i.status === 'processed');
+
+  const filtered = tab === 'pending' ? pending
+    : tab === 'approved' ? approved
+    : tab === 'rejected' ? rejected
+    : tab === 'processed' ? processed
+    : tab === 'report' ? []
+    : incidents;
+
+  const confColor = (c) => c >= 85 ? 'high' : c >= 60 ? 'medium' : 'low';
+
+  return (
+    <div>
+      <div className="navbar">
+        <h1>🛡️ SOC AI Agent Dashboard</h1>
+        <div className="navbar-right">
+          <button className="btn report" onClick={generateReport} disabled={reportLoading}>
+            {reportLoading ? '⏳ Generating...' : '📊 Generate Report'}
+          </button>
+          <button className="btn refresh" onClick={fetchIncidents}>↻ Refresh</button>
+        </div>
+      </div>
+      <div className="container">
+        <div className="stats">
+          <div className="stat-card pending">
+            <h3>PENDING REVIEW</h3>
+            <p style={{color:'#f59e0b'}}>{pending.length}</p>
+          </div>
+          <div className="stat-card approved">
+            <h3>APPROVED</h3>
+            <p style={{color:'#10b981'}}>{approved.length}</p>
+          </div>
+          <div className="stat-card rejected">
+            <h3>REJECTED</h3>
+            <p style={{color:'#9ca3af'}}>{rejected.length}</p>
+          </div>
+          <div className="stat-card processed">
+            <h3>AUTO PROCESSED</h3>
+            <p style={{color:'#00d4ff'}}>{processed.length}</p>
+          </div>
+        </div>
+
+        <div className="tabs">
+          {[
+            ['pending','Pending Review'],
+            ['approved','Approved'],
+            ['rejected','Rejected'],
+            ['processed','Auto Processed'],
+            ['all','All'],
+            ['report','Report']
+          ].map(([key,label]) => (
+            <button key={key} className={`tab ${tab===key?'active':''}`} onClick={()=>setTab(key)}>
+              {label}
+              {key==='pending' && pending.length > 0 && <span className="badge">{pending.length}</span>}
+            </button>
+          ))}
+        </div>
+
+        {tab === 'report' && (
+          <div className="report-container">
+            <h2>📊 Executive Security Report</h2>
+            {reportLoading && <p className="loading-text">⏳ Generating report with AI...</p>}
+            {!reportLoading && !report && <p className="loading-text">Click "Generate Report" to create an AI-powered executive report.</p>}
+            {report && (
+              <>
+                <p style={{fontSize:'0.75rem', color:'#94a3b8', marginBottom:'1rem'}}>
+                  Based on {report.incidents_analyzed} incidents
+                </p>
+                <div className="report-text" dangerouslySetInnerHTML={{__html: formatReport(report.report)}} />
+              </>
+            )}
+          </div>
+        )}
+
+        {tab !== 'report' && (
+          loading ? <div className="empty">Loading...</div>
+          : filtered.length === 0 ? <div className="empty">No incidents found.</div>
+          : filtered.map(inc => (
+            <div key={inc.id} className="incident-card">
+              <div className="incident-header">
+                <div>
+                  <div className="incident-title">{inc.rule_description}</div>
+                  <div className="incident-meta">
+                    Agent: <strong>{inc.agent_name}</strong> · Rule: {inc.rule_id} · {new Date(inc.created_at).toLocaleString()}
+                  </div>
+                  <div className="mitre">{inc.mitre_technique}</div>
+                </div>
+                <div style={{textAlign:'right'}}>
+                  <div className={`confidence ${confColor(inc.confidence)}`}>{inc.confidence}%</div>
+                  <div style={{fontSize:'0.7rem', color:'#94a3b8'}}>confidence</div>
+                </div>
+              </div>
+
+              <div className="badges">
+                <span className={`pill ${inc.classification}`}>{inc.classification?.replace('_',' ')}</span>
+                <span className={`pill ${inc.severity}`}>{inc.severity}</span>
+                <span className="pill" style={{background:'#1e3a5f',color:'#00d4ff'}}>{inc.decision?.replace('_',' ')}</span>
+                <span className={`status-badge ${inc.status}`}>{inc.status?.replace('_',' ')}</span>
+              </div>
+
+              {inc.reasoning && <div className="reasoning">💬 {inc.reasoning}</div>}
+              {inc.recommended_action && <div className="action-text">🎯 <strong>Recommended:</strong> {inc.recommended_action}</div>}
+
+              {inc.status === 'pending_human' && (
+                <div className="buttons">
+                  <button className="btn approve" onClick={()=>approve(inc.id)}>✓ Approve</button>
+                  <button className="btn reject" onClick={()=>reject(inc.id)}>✗ Reject (False Positive)</button>
+                </div>
+              )}
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>

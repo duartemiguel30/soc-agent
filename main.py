@@ -5,6 +5,8 @@ from sqlalchemy.orm import Session
 from db.database import engine, Base, get_db
 from db.models import Incident
 from agent.graph import build_graph
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -102,6 +104,57 @@ def reject_incident(incident_id: str, db: Session = Depends(get_db)):
     db.commit()
     logger.info(f"Incident {incident_id} REJECTED by human analyst - closed as false positive")
     return {"incident_id": incident_id, "status": "rejected"}
+
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+@app.get("/", include_in_schema=False)
+def serve_dashboard():
+    return FileResponse("static/index.html")
+
+@app.get("/report")
+def generate_report(db: Session = Depends(get_db)):
+    """Gera um relatório executivo dos incidentes com AI."""
+    from langchain_google_genai import ChatGoogleGenerativeAI
+    from config import GEMINI_API_KEY
+
+    incidents = db.query(Incident).order_by(Incident.created_at.desc()).limit(50).all()
+
+    if not incidents:
+        return {"report": "No incidents found."}
+
+    summary = "\n".join([
+        f"- [{i.created_at}] Rule {i.rule_id}: {i.rule_description} | Agent: {i.agent_name} | "
+        f"Classification: {i.classification} | Confidence: {i.confidence}% | "
+        f"Severity: {i.severity} | Decision: {i.decision} | Status: {i.status}"
+        for i in incidents
+    ])
+
+    prompt = f"""You are a senior SOC analyst. Based on the following security incidents detected in the last period, generate a concise executive security report.
+
+INCIDENTS:
+{summary}
+
+Write a professional report with these sections:
+1. Executive Summary (2-3 sentences)
+2. Key Findings (bullet points of most critical incidents)
+3. False Positives Identified (what was correctly filtered)
+4. Recommended Actions (prioritized)
+5. Overall Risk Assessment (Low/Medium/High/Critical)
+
+Be concise and professional."""
+
+    llm = ChatGoogleGenerativeAI(
+        model="gemini-3.1-flash-lite",
+        google_api_key=GEMINI_API_KEY,
+        temperature=0
+    )
+
+    response = llm.invoke(prompt)
+    content = response.content
+    if isinstance(content, list):
+        content = "".join([c.get("text", "") if isinstance(c, dict) else str(c) for c in content])
+
+    return {"report": content, "incidents_analyzed": len(incidents)}
 
 @app.get("/health")
 def health():
