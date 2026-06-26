@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { AppShell } from "@/app/components/AppShell";
 import { AuthGuard } from "@/app/components/AuthGuard";
 import { IncidentList } from "@/app/components/IncidentList";
@@ -53,6 +54,18 @@ const levelOptions = [
   { value: "gte15", label: "Rule level >= 15" },
 ] as const;
 
+const archiveOptions = [
+  { value: "false", label: "Active incidents" },
+  { value: "all", label: "Active + archived" },
+  { value: "true", label: "Archived only" },
+] as const;
+
+const archiveValues = archiveOptions.map((option) => option.value);
+const statusValues = statusOptions.map((option) => option.value);
+const severityValues = severityOptions.map((option) => option.value);
+const classificationValues = classificationOptions.map((option) => option.value);
+const decisionValues = decisionOptions.map((option) => option.value);
+
 const sortOptions = [
   { value: "newest", label: "Newest first" },
   { value: "oldest", label: "Oldest first" },
@@ -67,7 +80,22 @@ type SeverityFilter = (typeof severityOptions)[number]["value"];
 type ClassificationFilter = (typeof classificationOptions)[number]["value"];
 type DecisionFilter = (typeof decisionOptions)[number]["value"];
 type LevelFilter = (typeof levelOptions)[number]["value"];
+type ArchiveFilter = (typeof archiveOptions)[number]["value"];
 type SortKey = (typeof sortOptions)[number]["value"];
+
+function queryOption<T extends string>(value: string | null, allowed: readonly T[], fallback: T): T {
+  return value && allowed.includes(value as T) ? (value as T) : fallback;
+}
+
+function queryLevel(value: string | null): LevelFilter {
+  if (value === "gte15" || value === "15") {
+    return "gte15";
+  }
+  if (value === "gte12" || value === "12") {
+    return "gte12";
+  }
+  return "all";
+}
 
 function incidentTime(incident: Incident) {
   return incidentLastSeenTime(incident);
@@ -77,14 +105,29 @@ function compareText(a?: string | null, b?: string | null) {
   return (a || "").localeCompare(b || "");
 }
 
-export default function IncidentsPage() {
+function IncidentsContent() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const [incidents, setIncidents] = useState<Incident[]>([]);
-  const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
-  const [severityFilter, setSeverityFilter] = useState<SeverityFilter>("all");
-  const [classificationFilter, setClassificationFilter] = useState<ClassificationFilter>("all");
-  const [decisionFilter, setDecisionFilter] = useState<DecisionFilter>("all");
-  const [levelFilter, setLevelFilter] = useState<LevelFilter>("all");
+  const [archiveFilter, setArchiveFilter] = useState<ArchiveFilter>(() =>
+    queryOption(searchParams.get("archived"), archiveValues, "false"),
+  );
+  const [search, setSearch] = useState(() => searchParams.get("q") || "");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>(() =>
+    queryOption(searchParams.get("status"), statusValues, "all"),
+  );
+  const [severityFilter, setSeverityFilter] = useState<SeverityFilter>(() =>
+    queryOption(searchParams.get("severity"), severityValues, "all"),
+  );
+  const [classificationFilter, setClassificationFilter] = useState<ClassificationFilter>(() =>
+    queryOption(searchParams.get("classification"), classificationValues, "all"),
+  );
+  const [decisionFilter, setDecisionFilter] = useState<DecisionFilter>(() =>
+    queryOption(searchParams.get("decision"), decisionValues, "all"),
+  );
+  const [levelFilter, setLevelFilter] = useState<LevelFilter>(() => queryLevel(searchParams.get("rule_level")));
+  const [mitreFilter, setMitreFilter] = useState(() => searchParams.get("mitre") || "");
+  const [agentFilter, setAgentFilter] = useState(() => searchParams.get("agent") || "");
   const [sortKey, setSortKey] = useState<SortKey>("newest");
   const [compact, setCompact] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(true);
@@ -96,14 +139,29 @@ export default function IncidentsPage() {
   const refresh = useCallback(async () => {
     setError(null);
     try {
-      setIncidents(await listIncidents("false"));
+      setIncidents(await listIncidents(archiveFilter));
       setLastUpdated(new Date().toLocaleTimeString());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load incidents");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [archiveFilter]);
+
+  useEffect(() => {
+    const applyParams = window.setTimeout(() => {
+      setArchiveFilter(queryOption(searchParams.get("archived"), archiveValues, "false"));
+      setSearch(searchParams.get("q") || "");
+      setStatusFilter(queryOption(searchParams.get("status"), statusValues, "all"));
+      setSeverityFilter(queryOption(searchParams.get("severity"), severityValues, "all"));
+      setClassificationFilter(queryOption(searchParams.get("classification"), classificationValues, "all"));
+      setDecisionFilter(queryOption(searchParams.get("decision"), decisionValues, "all"));
+      setLevelFilter(queryLevel(searchParams.get("rule_level")));
+      setMitreFilter(searchParams.get("mitre") || "");
+      setAgentFilter(searchParams.get("agent") || "");
+    }, 0);
+    return () => window.clearTimeout(applyParams);
+  }, [searchParams]);
 
   useEffect(() => {
     const initialLoad = window.setTimeout(refresh, 0);
@@ -116,6 +174,8 @@ export default function IncidentsPage() {
 
   const filteredIncidents = useMemo(() => {
     const query = search.trim().toLowerCase();
+    const mitreQuery = mitreFilter.trim().toLowerCase();
+    const agentQuery = agentFilter.trim().toLowerCase();
 
     return incidents
       .filter((incident) => {
@@ -151,6 +211,12 @@ export default function IncidentsPage() {
         if (levelFilter === "gte15" && (incident.rule_level ?? 0) < 15) {
           return false;
         }
+        if (mitreQuery && !(incident.mitre_technique || "").toLowerCase().includes(mitreQuery)) {
+          return false;
+        }
+        if (agentQuery && !(incident.agent_name || "").toLowerCase().includes(agentQuery)) {
+          return false;
+        }
         return true;
       })
       .sort((a, b) => {
@@ -172,10 +238,12 @@ export default function IncidentsPage() {
         return incidentTime(b) - incidentTime(a);
       });
   }, [
+    agentFilter,
     classificationFilter,
     decisionFilter,
     incidents,
     levelFilter,
+    mitreFilter,
     search,
     severityFilter,
     sortKey,
@@ -203,7 +271,11 @@ export default function IncidentsPage() {
     setClassificationFilter("all");
     setDecisionFilter("all");
     setLevelFilter("all");
+    setMitreFilter("");
+    setAgentFilter("");
     setSortKey("newest");
+    setArchiveFilter("false");
+    router.replace("/incidents");
   }
 
   return (
@@ -277,6 +349,16 @@ export default function IncidentsPage() {
 
                   <div className="filter-grid">
                     <label className="field">
+                      Archive scope
+                      <select value={archiveFilter} onChange={(event) => setArchiveFilter(event.target.value as ArchiveFilter)}>
+                        {archiveOptions.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="field">
                       Status
                       <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as StatusFilter)}>
                         {statusOptions.map((option) => (
@@ -345,6 +427,22 @@ export default function IncidentsPage() {
                         ))}
                       </select>
                     </label>
+                    <label className="field">
+                      MITRE technique
+                      <input
+                        value={mitreFilter}
+                        onChange={(event) => setMitreFilter(event.target.value)}
+                        placeholder="Password Guessing"
+                      />
+                    </label>
+                    <label className="field">
+                      Agent
+                      <input
+                        value={agentFilter}
+                        onChange={(event) => setAgentFilter(event.target.value)}
+                        placeholder="Win10"
+                      />
+                    </label>
                   </div>
 
                   <div className="result-row">
@@ -379,5 +477,13 @@ export default function IncidentsPage() {
         </AppShell>
       )}
     </AuthGuard>
+  );
+}
+
+export default function IncidentsPage() {
+  return (
+    <Suspense fallback={<div className="loading-panel">Loading incidents...</div>}>
+      <IncidentsContent />
+    </Suspense>
   );
 }

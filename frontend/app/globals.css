@@ -538,6 +538,19 @@ button:disabled {
   font-size: 1.75rem;
 }
 
+.metric-link {
+  transition:
+    border-color 160ms ease,
+    transform 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.metric-link:hover {
+  border-color: var(--accent-strong);
+  transform: translateY(-1px);
+  box-shadow: 0 16px 36px rgba(15, 23, 42, 0.1);
+}
+
 .metric-card.compact strong {
   font-size: 1.55rem;
 }
@@ -635,6 +648,81 @@ button:disabled {
   min-height: 172px;
 }
 
+.evolution-controls {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.segmented-control {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  width: fit-content;
+  max-width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  padding: 4px;
+}
+
+.segmented-control button {
+  min-width: 48px;
+  min-height: 32px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 700;
+  padding: 6px 10px;
+}
+
+.segmented-control button:hover,
+.segmented-control button.active {
+  border-color: rgba(47, 128, 237, 0.26);
+  background: var(--panel);
+  color: var(--accent-strong);
+}
+
+.evolution-control-row {
+  display: grid;
+  align-items: end;
+  grid-template-columns: minmax(140px, 180px) minmax(160px, 220px) auto;
+  gap: 10px;
+}
+
+.compact-field {
+  font-size: 0.78rem;
+}
+
+.chart-nav {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.evolution-history-scope {
+  display: grid;
+  gap: 5px;
+  min-height: 54px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  padding: 8px 10px;
+}
+
+.evolution-history-scope span {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.evolution-history-scope strong {
+  color: var(--text);
+  font-size: 0.9rem;
+  line-height: 1.25;
+}
+
 .bar-chart {
   display: grid;
   align-items: end;
@@ -644,6 +732,10 @@ button:disabled {
   min-height: 126px;
   overflow-x: auto;
   padding: 4px 2px 0;
+}
+
+.evolution-bar-chart {
+  min-height: 150px;
 }
 
 .bar-column {
@@ -668,6 +760,7 @@ button:disabled {
   display: block;
   width: 100%;
   border-radius: 7px 7px 0 0;
+  background: var(--accent);
 }
 
 .bar-column strong,
@@ -686,6 +779,16 @@ button:disabled {
 .horizontal-chart {
   display: grid;
   gap: 12px;
+}
+
+.horizontal-row-link {
+  border-radius: 8px;
+  color: inherit;
+  padding: 2px;
+}
+
+.horizontal-row-link:hover {
+  background: var(--soft-blue);
 }
 
 .horizontal-row {
@@ -759,10 +862,23 @@ button:disabled {
   gap: 7px;
 }
 
-.chart-legend span {
+.chart-legend span,
+.chart-legend-link {
   display: flex;
   align-items: center;
   gap: 7px;
+}
+
+.chart-legend-link {
+  border-radius: 7px;
+  color: var(--muted);
+  font-size: 0.76rem;
+  padding: 2px 3px;
+}
+
+.chart-legend-link:hover {
+  background: var(--soft-blue);
+  color: var(--accent-strong);
 }
 
 .chart-legend i {
@@ -781,6 +897,81 @@ button:disabled {
   background: var(--panel-soft);
   color: var(--muted);
   padding: 18px;
+}
+
+.chart-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.chart-footer a {
+  color: var(--accent-strong);
+  font-weight: 800;
+}
+
+.bar-column-link {
+  border-radius: 8px;
+  color: inherit;
+  padding: 2px;
+}
+
+.bar-column-link:hover {
+  background: var(--soft-blue);
+}
+
+.analytics-panel {
+  min-height: 360px;
+}
+
+.analytics-table {
+  display: grid;
+  gap: 10px;
+}
+
+.analytics-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 72px;
+  gap: 8px 14px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  padding: 12px;
+}
+
+.analytics-row:hover {
+  border-color: var(--accent-strong);
+  background: var(--soft-blue);
+}
+
+.analytics-row-main {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.analytics-row-main strong {
+  overflow-wrap: anywhere;
+}
+
+.analytics-row-main span,
+.analytics-row-percent {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.analytics-row-percent {
+  justify-self: end;
+  font-weight: 800;
+}
+
+.analytics-row .horizontal-track {
+  grid-column: 1 / -1;
 }
 
 .split-grid {
@@ -1757,6 +1948,15 @@ button:disabled {
       "mitre agents";
   }
 
+  .evolution-control-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .chart-nav {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+
 }
 
 @media (max-width: 760px) {
@@ -1867,6 +2067,24 @@ button:disabled {
   .donut-chart {
     grid-template-columns: 1fr;
     justify-items: center;
+  }
+
+  .segmented-control,
+  .chart-nav {
+    width: 100%;
+  }
+
+  .segmented-control button,
+  .chart-nav .button {
+    flex: 1 1 0;
+  }
+
+  .evolution-control-row {
+    grid-template-columns: 1fr;
+  }
+
+  .chart-nav {
+    grid-column: auto;
   }
 }
 

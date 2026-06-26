@@ -43,6 +43,32 @@ export type IncidentAlertEvent = {
   created_at?: string | null;
 };
 
+export type AlertEvolutionRange = "24h" | "7d" | "1m" | "1y" | "all";
+
+export type AlertEvolutionBucket = "hour" | "day" | "week" | "month" | "year";
+
+export type AlertEvolutionPoint = {
+  label: string;
+  start: string;
+  end: string;
+  count: number;
+};
+
+export type AlertEvolutionResponse = {
+  range: AlertEvolutionRange;
+  bucket: AlertEvolutionBucket;
+  archived: "all" | "true" | "false";
+  window_start?: string | null;
+  window_end?: string | null;
+  window_label: string;
+  points: AlertEvolutionPoint[];
+  total: number;
+  data_start?: string | null;
+  data_end?: string | null;
+  can_go_previous: boolean;
+  can_go_next: boolean;
+};
+
 export type IncidentArchiveState = {
   id: number;
   incident_id: string;
@@ -228,6 +254,23 @@ export function getCurrentUser() {
 
 export function listIncidents(archived: "all" | "true" | "false" = "all") {
   return request<Incident[]>(`/incidents?archived=${archived}`);
+}
+
+export function getAlertEvolution(params: {
+  range: AlertEvolutionRange;
+  bucket: AlertEvolutionBucket;
+  anchor?: string;
+  archived?: "all" | "true" | "false";
+}) {
+  const search = new URLSearchParams({
+    range: params.range,
+    bucket: params.bucket,
+    archived: params.archived || "all",
+  });
+  if (params.anchor) {
+    search.set("anchor", params.anchor);
+  }
+  return request<AlertEvolutionResponse>(`/analytics/alert-evolution?${search.toString()}`);
 }
 
 export function getIncident(id: string) {

@@ -4,7 +4,7 @@ import os
 import hashlib
 import secrets
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from agent.graph import build_graph
 from db.database import Base, engine, get_db
@@ -235,6 +235,189 @@ def incident_query_with_archive_filter(db: Session, archived: str | None):
             detail="archived must be one of: true, false, all",
         )
     return query
+
+
+ALERT_EVOLUTION_BUCKETS_BY_RANGE = {
+    "24h": {"hour"},
+    "7d": {"day"},
+    "1m": {"day", "week"},
+    "1y": {"week", "month"},
+    "all": {"year"},
+}
+
+ALERT_EVOLUTION_DEFAULT_BUCKETS = {
+    "24h": "hour",
+    "7d": "day",
+    "1m": "day",
+    "1y": "month",
+    "all": "year",
+}
+
+
+def coerce_datetime(value) -> datetime | None:
+    if isinstance(value, datetime):
+        if value.tzinfo:
+            return value.astimezone(timezone.utc).replace(tzinfo=None)
+        return value
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day)
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        if text.endswith("Z"):
+            text = f"{text[:-1]}+00:00"
+        parsed = datetime.fromisoformat(text)
+        if parsed.tzinfo:
+            return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+        return parsed
+    except ValueError:
+        return None
+
+
+def parse_evolution_anchor(anchor: str | None) -> datetime:
+    if not anchor:
+        now = utc_now()
+        return datetime(now.year, now.month, now.day)
+    text = anchor.strip()
+    try:
+        if len(text) == 4 and text.isdigit():
+            return datetime(int(text), 1, 1)
+        if len(text) == 7 and text[4] == "-":
+            year, month = text.split("-", 1)
+            return datetime(int(year), int(month), 1)
+        parsed = coerce_datetime(text)
+        if parsed:
+            return parsed
+    except ValueError:
+        pass
+    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid anchor date")
+
+
+def start_of_day(value: datetime) -> datetime:
+    return datetime(value.year, value.month, value.day)
+
+
+def start_of_week(value: datetime) -> datetime:
+    day_start = start_of_day(value)
+    return day_start - timedelta(days=day_start.weekday())
+
+
+def start_of_month(value: datetime) -> datetime:
+    return datetime(value.year, value.month, 1)
+
+
+def add_months(value: datetime, months: int) -> datetime:
+    month_index = value.month - 1 + months
+    year = value.year + month_index // 12
+    month = month_index % 12 + 1
+    return datetime(year, month, 1)
+
+
+def alert_evolution_window(range_name: str, anchor: str | None, timestamps: list[datetime]) -> tuple[datetime | None, datetime | None]:
+    if range_name == "all":
+        if not timestamps:
+            return None, None
+        first_year = min(timestamps).year
+        last_year = max(timestamps).year
+        return datetime(first_year, 1, 1), datetime(last_year + 1, 1, 1)
+
+    anchor_date = parse_evolution_anchor(anchor)
+    if range_name == "24h":
+        start = start_of_day(anchor_date)
+        return start, start + timedelta(days=1)
+    if range_name == "7d":
+        start = start_of_week(anchor_date)
+        return start, start + timedelta(days=7)
+    if range_name == "1m":
+        start = start_of_month(anchor_date)
+        return start, add_months(start, 1)
+    if range_name == "1y":
+        start = datetime(anchor_date.year, 1, 1)
+        return start, datetime(anchor_date.year + 1, 1, 1)
+    return None, None
+
+
+def next_bucket_start(value: datetime, bucket: str) -> datetime:
+    if bucket == "hour":
+        return value + timedelta(hours=1)
+    if bucket == "day":
+        return value + timedelta(days=1)
+    if bucket == "week":
+        return value + timedelta(days=7)
+    if bucket == "month":
+        return add_months(value, 1)
+    if bucket == "year":
+        return add_months(value, 12)
+    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid bucket")
+
+
+def alert_evolution_bucket_label(value: datetime, bucket: str) -> str:
+    if bucket == "hour":
+        return value.strftime("%H:00")
+    if bucket == "day":
+        return value.strftime("%d/%m")
+    if bucket == "week":
+        return f"W{value.isocalendar().week:02d}"
+    if bucket == "month":
+        return value.strftime("%b")
+    return value.strftime("%Y")
+
+
+def alert_evolution_window_label(range_name: str, start: datetime | None, end: datetime | None) -> str:
+    if not start or not end:
+        return "No stored events"
+    if range_name == "24h":
+        return start.strftime("%d/%m/%Y")
+    if range_name == "7d":
+        return f"Week of {start.strftime('%d/%m/%Y')}"
+    if range_name == "1m":
+        return start.strftime("%B %Y")
+    if range_name == "1y":
+        return start.strftime("%Y")
+    return f"{start.year}-{end.year - 1}"
+
+
+def alert_evolution_records(db: Session, archived: str) -> list[datetime]:
+    event_rows = (
+        db.query(
+            IncidentAlertEvent.incident_id,
+            func.coalesce(IncidentAlertEvent.event_timestamp, IncidentAlertEvent.created_at),
+        )
+        .join(Incident, Incident.id == IncidentAlertEvent.incident_id)
+        .outerjoin(IncidentArchiveState, IncidentArchiveState.incident_id == Incident.id)
+    )
+
+    normalized = (archived or "all").lower()
+    if normalized == "false":
+        event_rows = event_rows.filter(IncidentArchiveState.id.is_(None))
+    elif normalized == "true":
+        event_rows = event_rows.filter(IncidentArchiveState.id.isnot(None))
+    elif normalized != "all":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="archived must be one of: true, false, all",
+        )
+
+    timestamps: list[datetime] = []
+    event_incident_ids: set[str] = set()
+    for incident_id, event_time in event_rows.all():
+        event_incident_ids.add(incident_id)
+        timestamp = coerce_datetime(event_time)
+        if timestamp:
+            timestamps.append(timestamp)
+
+    fallback_query = incident_query_with_archive_filter(db, archived)
+    if event_incident_ids:
+        fallback_query = fallback_query.filter(~Incident.id.in_(event_incident_ids))
+    for incident in fallback_query.all():
+        timestamp = coerce_datetime(incident.created_at)
+        if timestamp:
+            timestamps.append(timestamp)
+
+    return timestamps
 
 
 def serialize_playbook(playbook: IncidentPlaybook, steps: list[IncidentPlaybookStep]) -> dict:
@@ -860,6 +1043,66 @@ async def receive_alert(alert: dict, db: Session = Depends(get_db)):
         "correlated": False,
         "duplicate": False,
         "event_count": 1,
+    }
+
+
+@app.get("/analytics/alert-evolution")
+def get_alert_evolution(
+    range: str = "1m",
+    bucket: str | None = None,
+    anchor: str | None = None,
+    archived: str = "all",
+    db: Session = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    """Return read-only alert/event counts for dashboard time-series exploration."""
+    range_name = (range or "1m").lower()
+    if range_name not in ALERT_EVOLUTION_BUCKETS_BY_RANGE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="range must be one of: 24h, 7d, 1m, 1y, all",
+        )
+
+    bucket_name = (bucket or ALERT_EVOLUTION_DEFAULT_BUCKETS[range_name]).lower()
+    if bucket_name not in ALERT_EVOLUTION_BUCKETS_BY_RANGE[range_name]:
+        allowed = ", ".join(sorted(ALERT_EVOLUTION_BUCKETS_BY_RANGE[range_name]))
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"bucket must be one of for range {range_name}: {allowed}",
+        )
+
+    timestamps = sorted(alert_evolution_records(db, archived))
+    window_start, window_end = alert_evolution_window(range_name, anchor, timestamps)
+
+    points = []
+    if window_start and window_end:
+        current = window_start
+        while current < window_end:
+            next_start = min(next_bucket_start(current, bucket_name), window_end)
+            count = sum(1 for timestamp in timestamps if current <= timestamp < next_start)
+            points.append(
+                {
+                    "label": alert_evolution_bucket_label(current, bucket_name),
+                    "start": current,
+                    "end": next_start,
+                    "count": count,
+                }
+            )
+            current = next_start
+
+    return {
+        "range": range_name,
+        "bucket": bucket_name,
+        "archived": (archived or "all").lower(),
+        "window_start": window_start,
+        "window_end": window_end,
+        "window_label": alert_evolution_window_label(range_name, window_start, window_end),
+        "points": points,
+        "total": sum(point["count"] for point in points),
+        "data_start": min(timestamps) if timestamps else None,
+        "data_end": max(timestamps) if timestamps else None,
+        "can_go_previous": bool(window_start and range_name != "all" and any(timestamp < window_start for timestamp in timestamps)),
+        "can_go_next": bool(window_end and range_name != "all" and any(timestamp >= window_end for timestamp in timestamps)),
     }
 
 

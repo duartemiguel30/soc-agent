@@ -2,9 +2,11 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { AlertEvolutionExplorer } from "@/app/components/AlertEvolutionExplorer";
 import { AppShell } from "@/app/components/AppShell";
 import { AuthGuard } from "@/app/components/AuthGuard";
 import { Incident, listArchivedIncidents, listIncidents } from "@/lib/api";
+import { incidentFilterHref, mitreDistribution, totalAlertEvents } from "@/lib/analytics";
 import {
   getSeverity,
   incidentEventCount,
@@ -19,6 +21,8 @@ type ChartDatum = {
   label: string;
   value: number;
   color?: string;
+  href?: string;
+  key?: string;
 };
 
 const chartColors = ["#2f80ed", "#10b981", "#f97316", "#8b5cf6", "#64748b", "#ef4444"];
@@ -35,12 +39,6 @@ function incidentVolume(incident: Incident) {
   return incidentEventCount(incident);
 }
 
-function incidentTimeValue(incident: Incident) {
-  const value = incident.last_seen || incident.created_at || incident.first_seen;
-  const time = new Date(value || "").getTime();
-  return Number.isNaN(time) ? 0 : time;
-}
-
 function addToDistribution(map: Map<string, number>, label: string, value: number) {
   const key = label.trim() || "Unknown";
   map.set(key, (map.get(key) || 0) + value);
@@ -50,68 +48,24 @@ function topDistribution(
   incidents: Incident[],
   getLabel: (incident: Incident) => string | null | undefined,
   limit = 6,
+  hrefFor?: (label: string) => string,
 ) {
   const map = new Map<string, number>();
   incidents.forEach((incident) => addToDistribution(map, getLabel(incident) || "Unknown", incidentVolume(incident)));
   return Array.from(map.entries())
-    .map(([label, value], index) => ({ label: labelValue(label), value, color: chartColors[index % chartColors.length] }))
-    .sort((a, b) => b.value - a.value)
+    .map(([label, value], index) => ({
+      label: labelValue(label),
+      value,
+      color: chartColors[index % chartColors.length],
+      href: hrefFor?.(label),
+      key: normalizeValue(label),
+    }))
+    .sort((a, b) => b.value - a.value || a.label.localeCompare(b.label))
     .slice(0, limit);
 }
 
-function timeBuckets(incidents: Incident[]): ChartDatum[] {
-  const dated = incidents
-    .map((incident) => ({ incident, time: incidentTimeValue(incident) }))
-    .filter((item) => item.time > 0)
-    .sort((a, b) => a.time - b.time);
-
-  if (!dated.length) {
-    return [];
-  }
-
-  const first = dated[0].time;
-  const last = dated[dated.length - 1].time;
-  const useHours = last - first <= 48 * 60 * 60 * 1000;
-  const formatter = new Intl.DateTimeFormat(undefined, useHours ? { hour: "2-digit", day: "2-digit" } : { month: "short", day: "2-digit" });
-  const map = new Map<string, number>();
-
-  dated.forEach(({ incident, time }) => {
-    const date = new Date(time);
-    const bucket = useHours
-      ? new Date(date.getFullYear(), date.getMonth(), date.getDate(), date.getHours())
-      : new Date(date.getFullYear(), date.getMonth(), date.getDate());
-    addToDistribution(map, formatter.format(bucket), incidentVolume(incident));
-  });
-
-  return Array.from(map.entries()).map(([label, value]) => ({ label, value, color: "#2f80ed" }));
-}
-
-function EmptyChart() {
-  return <div className="chart-empty">No incident data available.</div>;
-}
-
-function VerticalBarChart({ data }: { data: ChartDatum[] }) {
-  const max = Math.max(...data.map((item) => item.value), 1);
-  if (!data.length) {
-    return <EmptyChart />;
-  }
-
-  return (
-    <div className="bar-chart" role="list">
-      {data.map((item) => (
-        <div className="bar-column" key={item.label} role="listitem">
-          <div className="bar-track" aria-label={`${item.label}: ${item.value}`}>
-            <span
-              className="bar-fill"
-              style={{ height: `${Math.max(8, (item.value / max) * 100)}%`, background: item.color || "#2f80ed" }}
-            />
-          </div>
-          <strong>{item.value}</strong>
-          <span>{item.label}</span>
-        </div>
-      ))}
-    </div>
-  );
+function EmptyChart({ children = "No incident data available." }: { children?: string }) {
+  return <div className="chart-empty">{children}</div>;
 }
 
 function HorizontalBarList({ data }: { data: ChartDatum[] }) {
@@ -123,34 +77,35 @@ function HorizontalBarList({ data }: { data: ChartDatum[] }) {
   return (
     <div className="horizontal-chart">
       {data.map((item) => (
-        <div className="horizontal-row" key={item.label}>
-          <div className="horizontal-label">
+        <Link className="horizontal-row horizontal-row-link" href={item.href || "#"} key={item.label}>
+          <span className="horizontal-label">
             <span>{item.label}</span>
             <strong>{item.value}</strong>
-          </div>
-          <div className="horizontal-track">
+          </span>
+          <span className="horizontal-track">
             <span
               className="horizontal-fill"
               style={{ width: `${Math.max(4, (item.value / max) * 100)}%`, background: item.color || "#2f80ed" }}
             />
-          </div>
-        </div>
+          </span>
+        </Link>
       ))}
     </div>
   );
 }
 
 function DonutChart({ data }: { data: ChartDatum[] }) {
-  const total = data.reduce((sum, item) => sum + item.value, 0);
+  const positiveData = data.filter((item) => item.value > 0);
+  const total = positiveData.reduce((sum, item) => sum + item.value, 0);
   const circumference = 2 * Math.PI * 38;
 
   if (!total) {
     return <EmptyChart />;
   }
 
-  const segments = data.map((item, index) => {
+  const segments = positiveData.map((item, index) => {
     const length = (item.value / total) * circumference;
-    const offset = data
+    const offset = positiveData
       .slice(0, index)
       .reduce((sum, previous) => sum + (previous.value / total) * circumference, 0);
     return { ...item, length, offset };
@@ -161,16 +116,17 @@ function DonutChart({ data }: { data: ChartDatum[] }) {
       <svg viewBox="0 0 96 96" aria-label="Distribution chart">
         <circle className="donut-base" cx="48" cy="48" r="38" />
         {segments.map((item, index) => (
-          <circle
-            className="donut-segment"
-            cx="48"
-            cy="48"
-            key={item.label}
-            r="38"
-            stroke={item.color || chartColors[index % chartColors.length]}
-            strokeDasharray={`${item.length} ${circumference - item.length}`}
-            strokeDashoffset={-item.offset}
-          />
+          <a href={item.href || "#"} key={item.label}>
+            <circle
+              className="donut-segment"
+              cx="48"
+              cy="48"
+              r="38"
+              stroke={item.color || chartColors[index % chartColors.length]}
+              strokeDasharray={`${item.length} ${circumference - item.length}`}
+              strokeDashoffset={-item.offset}
+            />
+          </a>
         ))}
         <text x="48" y="45" textAnchor="middle">
           {total}
@@ -181,10 +137,10 @@ function DonutChart({ data }: { data: ChartDatum[] }) {
       </svg>
       <div className="chart-legend">
         {data.map((item, index) => (
-          <span key={item.label}>
+          <Link className="chart-legend-link" href={item.href || "#"} key={item.label}>
             <i style={{ background: item.color || chartColors[index % chartColors.length] }} />
             {item.label} ({item.value})
-          </span>
+          </Link>
         ))}
       </div>
     </div>
@@ -239,8 +195,9 @@ export default function DashboardPage() {
       criticalDecision: incidents.filter(isCriticalDecisionIncident).length,
       humanReviewDecision: incidents.filter((incident) => normalizeValue(incident.decision) === "human_review").length,
       autoResponseDecision: incidents.filter((incident) => normalizeValue(incident.decision) === "auto_response").length,
+      totalAlertEvents: totalAlertEvents(allIncidents),
     };
-  }, [incidents]);
+  }, [allIncidents, incidents]);
 
   const severityDistribution = useMemo(() => {
     const distribution = { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 };
@@ -255,12 +212,26 @@ export default function DashboardPage() {
       label: labelValue(label),
       value,
       color: severityColors[label],
+      href: incidentFilterHref({ archived: "all", severity: label }),
+      key: label,
     }));
-    const decisions = topDistribution(allIncidents, (incident) => incident.decision || "Unknown");
+    const decisions = topDistribution(
+      allIncidents,
+      (incident) => incident.decision || "Unknown",
+      6,
+      (label) => incidentFilterHref({ archived: "all", decision: normalizeValue(label) }),
+    );
     return {
-      eventEvolution: timeBuckets(allIncidents),
-      mitre: topDistribution(allIncidents, (incident) => incident.mitre_technique || "Unknown"),
-      agents: topDistribution(allIncidents, (incident) => incident.agent_name || "Unknown"),
+      mitre: mitreDistribution(allIncidents, 10).map((item, index) => ({
+        ...item,
+        color: chartColors[index % chartColors.length],
+      })),
+      agents: topDistribution(
+        allIncidents,
+        (incident) => incident.agent_name || "Unknown",
+        6,
+        (label) => incidentFilterHref({ archived: "all", agent: label }),
+      ),
       severity,
       decisions,
     };
@@ -285,51 +256,50 @@ export default function DashboardPage() {
             </div>
 
             {error ? <div className="alert error">{error}</div> : null}
-
             <section className="metric-grid" aria-label="Active incident counts">
-              <div className="metric-card">
+              <Link className="metric-card metric-link" href="/incidents?archived=false">
                 <span>Active total</span>
                 <strong>{counts.total}</strong>
-              </div>
-              <div className="metric-card">
+              </Link>
+              <Link className="metric-card metric-link" href="/incidents?archived=false&status=pending_human">
                 <span>Pending</span>
                 <strong>{counts.pending}</strong>
-              </div>
-              <div className="metric-card">
+              </Link>
+              <Link className="metric-card metric-link" href="/incidents?archived=all&status=approved">
                 <span>Approved</span>
                 <strong>{counts.approved}</strong>
-              </div>
-              <div className="metric-card">
+              </Link>
+              <Link className="metric-card metric-link" href="/incidents?archived=all&status=rejected">
                 <span>Rejected</span>
                 <strong>{counts.rejected}</strong>
-              </div>
-              <div className="metric-card">
+              </Link>
+              <Link className="metric-card metric-link" href="/incidents?archived=all&status=processed">
                 <span>Auto processed</span>
                 <strong>{counts.processed}</strong>
-              </div>
-              <div className="metric-card">
+              </Link>
+              <Link className="metric-card metric-link" href="/archive">
                 <span>Archived</span>
                 <strong>{archivedCount}</strong>
-              </div>
-              <div className="metric-card">
-                <span>Total stored</span>
+              </Link>
+              <Link className="metric-card metric-link" href="/incidents?archived=all">
+                <span>Total incidents</span>
                 <strong>{storedCount}</strong>
-              </div>
+              </Link>
+              <Link className="metric-card metric-link" href="/analytics/alerts">
+                <span>Total alert events</span>
+                <strong>{counts.totalAlertEvents}</strong>
+              </Link>
             </section>
 
             <section className="dashboard-chart-grid" aria-label="Dashboard incident charts">
               <div className="panel chart-panel chart-evolution">
-                <div className="section-head">
-                  <h2>Alert/Event Evolution</h2>
-                  <span>By last seen</span>
-                </div>
-                <VerticalBarChart data={chartData.eventEvolution} />
+                <AlertEvolutionExplorer compact titleLink />
               </div>
 
               <div className="panel chart-panel chart-donut-panel chart-severity">
                 <div className="section-head">
                   <h2>Severity Distribution</h2>
-                  <span>Weighted events</span>
+                  <span>Counted by alert events</span>
                 </div>
                 <DonutChart data={chartData.severity} />
               </div>
@@ -337,15 +307,19 @@ export default function DashboardPage() {
               <div className="panel chart-panel chart-secondary chart-mitre">
                 <div className="section-head">
                   <h2>MITRE ATT&CK Distribution</h2>
-                  <span>Top techniques</span>
+                  <span>Top 10 techniques</span>
                 </div>
                 <HorizontalBarList data={chartData.mitre} />
+                <div className="chart-footer">
+                  <span>Event-weighted</span>
+                  <Link href="/analytics/mitre">View all</Link>
+                </div>
               </div>
 
               <div className="panel chart-panel chart-donut-panel chart-decision">
                 <div className="section-head">
                   <h2>Decision Distribution</h2>
-                  <span>Weighted events</span>
+                  <span>Counted by alert events</span>
                 </div>
                 <DonutChart data={chartData.decisions} />
               </div>
@@ -353,7 +327,7 @@ export default function DashboardPage() {
               <div className="panel chart-panel chart-secondary chart-agents">
                 <div className="section-head">
                   <h2>Top Agents</h2>
-                  <span>By event volume</span>
+                  <span>Counted by alert events</span>
                 </div>
                 <HorizontalBarList data={chartData.agents} />
               </div>

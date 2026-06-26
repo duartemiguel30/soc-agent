@@ -12,7 +12,7 @@ The backend is FastAPI with SQLite persistence. The primary admin UI is the Next
 - Admin authentication with opaque HttpOnly session cookies.
 - Next.js admin console for dashboard, incidents, archive, incident detail, notes, playbooks, response actions, and report generation.
 - Clean light/dark admin-console UI theme with centralized CSS variables for quick browser tuning.
-- Frontend-derived dashboard charts for event evolution, MITRE distribution, top agents, severity, and decisions.
+- Dashboard analytics for alert/event evolution, MITRE distribution, top agents, severity, and decisions.
 - Additive incident observables extracted from Wazuh/Sysmon payloads.
 - Alert correlation/deduplication groups repeated Wazuh alerts into one incident with event count, first seen, and last seen metadata.
 - Analyst-controlled response actions:
@@ -264,6 +264,7 @@ Incident, report, and response routes require admin session authentication:
 - `POST /incidents/{id}/unarchive`
 - `POST /incidents/{id}/approve`
 - `POST /incidents/{id}/reject`
+- `GET /analytics/alert-evolution`
 - `GET /report`
 
 Other public routes:
@@ -301,7 +302,27 @@ http://192.168.56.105:3000
 
 The UI supports a clean light/dark theme toggle in the header and mobile drawer. The selected theme is stored in `localStorage` under `soc_theme`; auth tokens are not stored in browser storage. Theme colors are centralized in `frontend/app/globals.css` under `:root` and `:root[data-theme="dark"]`; the fastest presentation-prep variables to adjust are `--bg`, `--panel`, `--line`, `--text`, `--muted`, `--accent`, `--accent-strong`, and the severity variables.
 
-Dashboard charts are computed in the frontend from existing incident API responses. They use fields such as `severity`, `decision`, `mitre_technique`, `agent_name`, `event_count`, `first_seen`, `last_seen`, and `created_at`. No heavy chart dependency is used; charts are plain React, CSS, and SVG. The dashboard uses a compact responsive analytics grid for event evolution, severity, MITRE, decision, and agent distributions.
+Dashboard distribution charts are computed in the frontend from existing incident API responses. They use fields such as `severity`, `decision`, `mitre_technique`, `agent_name`, `event_count`, `first_seen`, `last_seen`, and `created_at`.
+
+The Alert/Event Evolution chart uses the protected read-only `GET /analytics/alert-evolution` endpoint. It defaults to `archived=all`, so active and archived history are included in dashboard analytics. The endpoint counts stored `incident_alert_events` by `event_timestamp` with `created_at` fallback, then adds one fallback event for incidents that have no alert-event rows. This avoids double-counting correlated incidents while preserving older incidents created before alert-event storage existed.
+
+The evolution explorer supports:
+
+- `24h` with hourly buckets.
+- `7d` with daily buckets.
+- `1m` with daily or weekly buckets.
+- `1y` with weekly or monthly buckets.
+- `All` with yearly buckets.
+
+Previous/next navigation is disabled when no stored event exists outside the current selected period. No heavy chart dependency is used; charts are plain React, CSS, and SVG. The dashboard uses a compact responsive analytics grid for event evolution, severity, MITRE, decision, and agent distributions.
+
+Dashboard metric semantics are explicit:
+
+- `Total incidents` counts stored incident records, active plus archived.
+- `Total alert events` counts correlated alert-event volume, falling back to one event for older incidents without alert-event rows.
+- Dashboard charts are event-weighted by default and use `Counted by alert events` labels where the value is not a plain incident count.
+
+Dashboard metric cards and chart rows link to filtered internal views. Severity, decision, MITRE technique, and agent drilldowns open `/incidents` with query-param initialized filters. The incidents page supports `archived`, `status`, `severity`, `classification`, `decision`, `rule_level`, `mitre`, `agent`, and `q` query params.
 
 Mobile navigation uses a polished right-side drawer with an overlay; the theme toggle and logout remain inside the drawer. Incident detail uses explicit responsive columns on desktop to avoid large grid gaps, with long activity/history/playbook/note lists scrolling internally for balance, then collapses to one ordered column on narrow screens.
 
@@ -311,6 +332,8 @@ Current UI pages:
 - `/incidents`: active incident triage, filtering, approve/reject, archive, and detail links.
 - `/archive`: archived incident search, filtering, event aggregation metadata, and unarchive.
 - `/incidents/{id}`: read-only incident fields plus alert activity, observables, response actions, manual playbook, notes, timeline, and action history in a responsive two-column/masonry-style desktop layout.
+- `/analytics/alerts`: read-only full alert/event timeline explorer using active plus archived history by default.
+- `/analytics/mitre`: read-only full MITRE ATT&CK distribution, sorted by alert-event weighted count.
 - `/report`: global executive report generated from stored incidents.
 
 The frontend uses FastAPI's HttpOnly cookie through `/backend/*`. It uses `localStorage` only for the `soc_theme` preference and does not store auth tokens in `localStorage` or `sessionStorage`.
