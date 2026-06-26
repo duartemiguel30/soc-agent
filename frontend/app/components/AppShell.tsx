@@ -17,11 +17,43 @@ type AppShellProps = {
   children: ReactNode;
 };
 
+type Theme = "light" | "dark";
+
+function getInitialTheme(): Theme {
+  if (typeof window === "undefined") {
+    return "light";
+  }
+  return window.localStorage.getItem("soc_theme") === "dark" ? "dark" : "light";
+}
+
+function SunIcon() {
+  return (
+    <svg aria-hidden="true" className="theme-icon" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2v2.5M12 19.5V22M4.93 4.93 6.7 6.7M17.3 17.3l1.77 1.77M2 12h2.5M19.5 12H22M4.93 19.07 6.7 17.3M17.3 6.7l1.77-1.77" />
+    </svg>
+  );
+}
+
+function MoonIcon() {
+  return (
+    <svg aria-hidden="true" className="theme-icon" viewBox="0 0 24 24">
+      <path d="M20.5 14.4A7.6 7.6 0 0 1 9.6 3.5 8.6 8.6 0 1 0 20.5 14.4Z" />
+    </svg>
+  );
+}
+
 export function AppShell({ user, children }: AppShellProps) {
   const pathname = usePathname();
   const router = useRouter();
   const [loggingOut, setLoggingOut] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [theme, setTheme] = useState<Theme>(getInitialTheme);
+  const nextTheme = theme === "light" ? "dark" : "light";
+
+  function toggleTheme() {
+    setTheme(nextTheme);
+  }
 
   async function handleLogout() {
     setLoggingOut(true);
@@ -46,6 +78,11 @@ export function AppShell({ user, children }: AppShellProps) {
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [menuOpen]);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    window.localStorage.setItem("soc_theme", theme);
+  }, [theme]);
 
   return (
     <div className="app-shell">
@@ -111,6 +148,25 @@ export function AppShell({ user, children }: AppShellProps) {
                 </Link>
               ))}
             </nav>
+
+            <button
+              className="theme-toggle desktop-theme-toggle"
+              type="button"
+              aria-label={theme === "light" ? "Switch to dark mode" : "Switch to light mode"}
+              onClick={toggleTheme}
+            >
+              {theme === "light" ? <MoonIcon /> : <SunIcon />}
+            </button>
+
+            <button
+              className="theme-toggle drawer-theme-toggle"
+              type="button"
+              aria-label={theme === "light" ? "Switch to dark mode" : "Switch to light mode"}
+              onClick={toggleTheme}
+            >
+              {theme === "light" ? <MoonIcon /> : <SunIcon />}
+              <span>{theme === "light" ? "Switch to dark mode" : "Switch to light mode"}</span>
+            </button>
 
             <div className="session-card">
               <span>Signed in</span>
