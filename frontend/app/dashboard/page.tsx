@@ -1,16 +1,17 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/app/components/AppShell";
 import { AuthGuard } from "@/app/components/AuthGuard";
-import { IncidentList } from "@/app/components/IncidentList";
 import { Incident, listArchivedIncidents, listIncidents } from "@/lib/api";
 import {
   getSeverity,
-  isCriticalSeverityIncident,
+  isCriticalDecisionIncident,
   isPendingIncident,
   isProcessedIncident,
   labelValue,
+  normalizeValue,
 } from "@/lib/incidents";
 
 export default function DashboardPage() {
@@ -53,15 +54,15 @@ export default function DashboardPage() {
     return {
       total: incidents.length,
       pending: incidents.filter(isPendingIncident).length,
-      criticalSeverity: incidents.filter(isCriticalSeverityIncident).length,
       approved: incidents.filter((incident) => incident.status === "approved").length,
       rejected: incidents.filter((incident) => incident.status === "rejected").length,
       processed: incidents.filter(isProcessedIncident).length,
+      criticalDecision: incidents.filter(isCriticalDecisionIncident).length,
+      humanReviewDecision: incidents.filter((incident) => normalizeValue(incident.decision) === "human_review").length,
+      autoResponseDecision: incidents.filter((incident) => normalizeValue(incident.decision) === "auto_response").length,
     };
   }, [incidents]);
 
-  const recent = incidents.slice(0, 5);
-  const pending = incidents.filter(isPendingIncident);
   const severityDistribution = useMemo(() => {
     const distribution = { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 };
     incidents.forEach((incident) => {
@@ -100,10 +101,6 @@ export default function DashboardPage() {
                 <strong>{counts.pending}</strong>
               </div>
               <div className="metric-card">
-                <span>Critical severity</span>
-                <strong>{counts.criticalSeverity}</strong>
-              </div>
-              <div className="metric-card">
                 <span>Approved</span>
                 <strong>{counts.approved}</strong>
               </div>
@@ -115,18 +112,24 @@ export default function DashboardPage() {
                 <span>Auto processed</span>
                 <strong>{counts.processed}</strong>
               </div>
+              <div className="metric-card">
+                <span>Archived</span>
+                <strong>{archivedCount}</strong>
+              </div>
+              <div className="metric-card">
+                <span>Total stored</span>
+                <strong>{storedCount}</strong>
+              </div>
             </section>
 
             <section className="panel severity-strip-panel">
               <div className="section-head">
-                <h2>Severity Distribution</h2>
-                <span>
-                  {archivedCount} archived / {storedCount} stored
-                </span>
+                <h2>Active Severity Distribution</h2>
+                <span>{incidents.length} active</span>
               </div>
-              <div className="severity-strip">
+              <div className="metric-grid compact-metrics">
                 {Object.entries(severityDistribution).map(([severity, count]) => (
-                  <div key={severity} className="distribution-row compact">
+                  <div key={severity} className="metric-card compact">
                     <span>{labelValue(severity)}</span>
                     <strong>{count}</strong>
                   </div>
@@ -134,30 +137,50 @@ export default function DashboardPage() {
               </div>
             </section>
 
-            <div className="split-grid">
-              <section className="panel">
-                <div className="section-head">
-                  <h2>Pending Review</h2>
-                  <span>{pending.length}</span>
+            <section className="panel">
+              <div className="section-head">
+                <h2>Active Decision Metrics</h2>
+                <span>Current incident set</span>
+              </div>
+              <div className="metric-grid compact-metrics">
+                <div className="metric-card compact">
+                  <span>Critical alert decisions</span>
+                  <strong>{counts.criticalDecision}</strong>
                 </div>
-                {loading ? (
-                  <div className="loading-panel">Loading pending incidents...</div>
-                ) : (
-                  <IncidentList incidents={pending.slice(0, 5)} onChanged={refresh} compact detailed={false} />
-                )}
-              </section>
-              <section className="panel">
-                <div className="section-head">
-                  <h2>Recent Incidents</h2>
-                  <span>{recent.length}</span>
+                <div className="metric-card compact">
+                  <span>Human review decisions</span>
+                  <strong>{counts.humanReviewDecision}</strong>
                 </div>
-                {loading ? (
-                  <div className="loading-panel">Loading recent incidents...</div>
-                ) : (
-                  <IncidentList incidents={recent} onChanged={refresh} compact detailed={false} />
-                )}
-              </section>
-            </div>
+                <div className="metric-card compact">
+                  <span>Auto response decisions</span>
+                  <strong>{counts.autoResponseDecision}</strong>
+                </div>
+              </div>
+            </section>
+
+            <section className="panel">
+              <div className="section-head">
+                <h2>Navigation</h2>
+                <span>Operational shortcuts</span>
+              </div>
+              <div className="shortcut-grid">
+                <Link className="shortcut-card" href="/incidents">
+                  <span>Triage queue</span>
+                  <strong>{counts.pending}</strong>
+                  <p>Review active incidents that need analyst approval or rejection.</p>
+                </Link>
+                <Link className="shortcut-card" href="/archive">
+                  <span>Archive</span>
+                  <strong>{archivedCount}</strong>
+                  <p>Search and restore incidents removed from active operational views.</p>
+                </Link>
+                <Link className="shortcut-card" href="/report">
+                  <span>Executive report</span>
+                  <strong>Generate</strong>
+                  <p>Create the current global AI summary from stored incidents.</p>
+                </Link>
+              </div>
+            </section>
           </main>
         </AppShell>
       )}

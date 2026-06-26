@@ -351,12 +351,63 @@ button:disabled {
   padding: 16px;
 }
 
+.metric-grid.compact-metrics {
+  grid-template-columns: repeat(auto-fit, minmax(155px, 1fr));
+  margin-bottom: 18px;
+}
+
+.metric-card.compact {
+  min-height: 78px;
+  padding: 13px;
+}
+
 .metric-card span {
   color: var(--muted);
 }
 
 .metric-card strong {
   font-size: 2rem;
+}
+
+.metric-card.compact strong {
+  font-size: 1.55rem;
+}
+
+.shortcut-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.shortcut-card {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(7, 17, 15, 0.5);
+  color: var(--text);
+  padding: 15px;
+  text-decoration: none;
+}
+
+.shortcut-card:hover {
+  border-color: var(--accent-strong);
+}
+
+.shortcut-card span {
+  color: var(--muted);
+}
+
+.shortcut-card strong {
+  color: var(--accent);
+  font-size: 1.15rem;
+}
+
+.shortcut-card p {
+  margin: 0;
+  color: #c8d9d2;
+  line-height: 1.45;
 }
 
 .dashboard-grid {
@@ -618,6 +669,10 @@ button:disabled {
   gap: 12px;
 }
 
+.archive-filter-grid {
+  grid-template-columns: repeat(auto-fit, minmax(155px, 1fr));
+}
+
 .field {
   display: grid;
   gap: 7px;
@@ -860,6 +915,24 @@ button:disabled {
   gap: 10px;
 }
 
+.playbook-empty {
+  display: grid;
+  justify-items: start;
+  gap: 12px;
+  text-align: left;
+}
+
+.playbook-empty p {
+  margin: 0;
+}
+
+.suggestion-list {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding-left: 20px;
+}
+
 .timeline-entry {
   border-left: 3px solid var(--info);
 }
@@ -928,6 +1001,7 @@ button:disabled {
   .dashboard-grid,
   .detail-grid,
   .split-grid,
+  .shortcut-grid,
   .metric-grid,
   .severity-strip,
   .incident-grid,

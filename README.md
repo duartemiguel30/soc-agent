@@ -66,6 +66,7 @@ Protected backend routes:
 - `GET /incidents/archive`
 - `GET /incidents/{id}`
 - `GET /incidents/{id}/playbook`
+- `POST /incidents/{id}/playbook`
 - `PATCH /playbook/steps/{step_id}`
 - `GET /incidents/{id}/notes`
 - `POST /incidents/{id}/notes`
@@ -101,7 +102,7 @@ Archive endpoints:
 
 ## Manual Incident Response Playbooks
 
-Manual playbooks give analysts a deterministic checklist for each incident. They do not call Gemini and do not depend on live AI output for their steps. Playbooks are created lazily: the first request to `GET /incidents/{id}/playbook` creates one from a template if the incident does not already have one.
+Manual playbooks give analysts a deterministic checklist for each incident. They do not call Gemini and do not depend on live AI output for their steps. Incident detail viewing is read-only: `GET /incidents/{id}/playbook` returns an existing playbook or a suggested template without creating database rows. Analysts explicitly create the checklist with `POST /incidents/{id}/playbook`; that endpoint is idempotent and returns the existing playbook if one already exists.
 
 Template selection uses existing incident fields:
 
@@ -112,7 +113,7 @@ Template selection uses existing incident fields:
 - Scheduled task persistence: MITRE `T1053` or `T1053.005`, rule ID `100007`, or descriptions mentioning scheduled task.
 - Generic suspicious alert: fallback for all other alerts.
 
-Each playbook has ordered checklist steps with statuses `todo`, `in_progress`, `done`, and `skipped`. Analysts can add notes, and the backend records historical `incident_action_events` for incident-specific actions: playbook creation, step updates, notes, approvals, and rejections. The timeline uses these action events as its primary source; synthetic incident/AI/playbook fallback entries are only added for older incidents that do not have equivalent action events. Notes appear in the timeline through `note_added` action events; old notes without a corresponding action event are added as fallback timeline entries without duplicating logged notes. The Notes panel always shows full note bodies. The global `/report` endpoint remains read-only and does not write incident history. The incident detail page shows the playbook, analyst notes, combined timeline, and action history.
+Each playbook has ordered checklist steps with statuses `todo`, `in_progress`, `done`, and `skipped`. Analysts can add notes, and the backend records historical `incident_action_events` for incident-specific actions: playbook creation, step updates, notes, approvals, archive actions, and rejections. The timeline uses these action events as its primary source; synthetic incident/AI/playbook fallback entries are only added for older incidents that do not have equivalent action events. Notes appear in the timeline through `note_added` action events; old notes without a corresponding action event are added as fallback timeline entries without duplicating logged notes. The Notes panel always shows full note bodies. The backend returns timeline and action history chronologically; the Next.js incident detail page displays timeline and action history newest-first. The global `/report` endpoint remains read-only and does not write incident history. The incident detail page shows the playbook or suggested template, analyst notes, combined timeline, and action history.
 
 After pulling this code onto the `logger` VM, create or verify the new runtime tables:
 
@@ -148,6 +149,14 @@ npm run dev -- --host 0.0.0.0
 ```
 
 `frontend/next.config.ts` allows the VM dev origin `192.168.56.105` and rewrites `/backend/*` to FastAPI. Restart the Next dev server after changing this config.
+
+The current Next.js UI uses:
+
+- `/dashboard` as a metrics-only operations console with active, archived, stored, severity, and decision counts plus navigation shortcuts.
+- `/incidents` for active incident triage with metric cards, severity distribution, search, filters, sorting, approve/reject, archive, and detail links.
+- `/archive` for archived incidents with archive metrics, search, filters, sorting, unarchive, and detail links.
+- `/incidents/{id}` for read-only incident viewing until an analyst explicitly creates a manual playbook. Timeline and action history are presented newest-first in the UI.
+- `/report` for the global AI-generated executive summary based on currently stored incidents.
 
 Open:
 

@@ -26,30 +26,41 @@ def log_action_event(db, incident_id: str, actor: str | None, event_type: str, m
     return event
 
 
-def get_or_create_playbook(db, incident, actor: str | None = None):
-    def load_existing():
-        existing_playbook = (
-            db.query(IncidentPlaybook)
-            .filter(IncidentPlaybook.incident_id == incident.id)
-            .order_by(IncidentPlaybook.created_at.asc())
-            .first()
-        )
-        if not existing_playbook:
-            return None, [], False
-        existing_steps = (
-            db.query(IncidentPlaybookStep)
-            .filter(IncidentPlaybookStep.playbook_id == existing_playbook.id)
-            .order_by(IncidentPlaybookStep.step_order.asc())
-            .all()
-        )
-        return existing_playbook, existing_steps, False
-
+def load_playbook(db, incident_id: str):
     playbook = (
         db.query(IncidentPlaybook)
-        .filter(IncidentPlaybook.incident_id == incident.id)
+        .filter(IncidentPlaybook.incident_id == incident_id)
         .order_by(IncidentPlaybook.created_at.asc())
         .first()
     )
+    if not playbook:
+        return None, []
+
+    steps = (
+        db.query(IncidentPlaybookStep)
+        .filter(IncidentPlaybookStep.playbook_id == playbook.id)
+        .order_by(IncidentPlaybookStep.step_order.asc())
+        .all()
+    )
+    return playbook, steps
+
+
+def template_suggestion(incident):
+    template = select_template(incident)
+    return {
+        "key": template.key,
+        "title": template.title,
+        "summary": template.summary,
+        "steps": list(template.steps),
+    }
+
+
+def get_or_create_playbook(db, incident, actor: str | None = None):
+    def load_existing():
+        existing_playbook, existing_steps = load_playbook(db, incident.id)
+        return existing_playbook, existing_steps, False
+
+    playbook, _steps = load_playbook(db, incident.id)
     created = False
     if playbook:
         return load_existing()

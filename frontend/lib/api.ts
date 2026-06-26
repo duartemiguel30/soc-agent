@@ -67,6 +67,23 @@ export type IncidentPlaybook = {
   steps: PlaybookStep[];
 };
 
+export type PlaybookTemplateSuggestion = {
+  key: string;
+  title: string;
+  summary?: string | null;
+  steps: string[];
+};
+
+export type IncidentPlaybookResponse = {
+  playbook: IncidentPlaybook | null;
+  suggested_template?: PlaybookTemplateSuggestion | null;
+};
+
+export type CreateIncidentPlaybookResponse = {
+  playbook: IncidentPlaybook;
+  created: boolean;
+};
+
 export type IncidentNote = {
   id: number;
   incident_id: string;
@@ -205,7 +222,13 @@ export function generateReport() {
 }
 
 export function getIncidentPlaybook(id: string) {
-  return request<IncidentPlaybook>(`/incidents/${id}/playbook`);
+  return request<IncidentPlaybookResponse>(`/incidents/${id}/playbook`);
+}
+
+export function createIncidentPlaybook(id: string) {
+  return request<CreateIncidentPlaybookResponse>(`/incidents/${id}/playbook`, {
+    method: "POST",
+  });
 }
 
 export function updatePlaybookStep(stepId: number, status: PlaybookStep["status"]) {

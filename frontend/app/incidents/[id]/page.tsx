@@ -9,6 +9,7 @@ import {
   addIncidentNote,
   archiveIncident,
   approveIncident,
+  createIncidentPlaybook,
   getIncident,
   getIncidentPlaybook,
   getIncidentTimeline,
@@ -18,6 +19,7 @@ import {
   IncidentPlaybook,
   listIncidentActions,
   listIncidentNotes,
+  PlaybookTemplateSuggestion,
   PlaybookStep,
   rejectIncident,
   TimelineEvent,
@@ -34,6 +36,11 @@ import {
 
 const stepStatuses: PlaybookStep["status"][] = ["todo", "in_progress", "done", "skipped"];
 
+function dateTime(value?: string | null) {
+  const time = new Date(value || "").getTime();
+  return Number.isNaN(time) ? 0 : time;
+}
+
 function DetailRow({ label, value }: { label: string; value?: string | number | null }) {
   return (
     <div className="detail-row">
@@ -48,6 +55,7 @@ export default function IncidentDetailPage() {
   const incidentId = params.id;
   const [incident, setIncident] = useState<Incident | null>(null);
   const [playbook, setPlaybook] = useState<IncidentPlaybook | null>(null);
+  const [suggestedTemplate, setSuggestedTemplate] = useState<PlaybookTemplateSuggestion | null>(null);
   const [notes, setNotes] = useState<IncidentNote[]>([]);
   const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
   const [actions, setActions] = useState<IncidentActionEvent[]>([]);
@@ -70,10 +78,11 @@ export default function IncidentDetailPage() {
         listIncidentActions(incidentId),
       ]);
       setIncident(incidentData);
-      setPlaybook(playbookData);
+      setPlaybook(playbookData.playbook);
+      setSuggestedTemplate(playbookData.suggested_template || null);
       setNotes(notesData);
-      setTimeline(timelineData);
-      setActions(actionsData);
+      setTimeline([...timelineData].sort((a, b) => dateTime(b.timestamp) - dateTime(a.timestamp)));
+      setActions([...actionsData].sort((a, b) => dateTime(b.created_at) - dateTime(a.created_at)));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load incident detail");
     } finally {
@@ -98,6 +107,23 @@ export default function IncidentDetailPage() {
       setNotice("Playbook step updated.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not update playbook step");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleCreatePlaybook() {
+    setBusy(true);
+    setNotice(null);
+    setError(null);
+    try {
+      const response = await createIncidentPlaybook(incidentId);
+      setPlaybook(response.playbook);
+      setSuggestedTemplate(null);
+      await refresh();
+      setNotice(response.created ? "Manual playbook created." : "Existing manual playbook loaded.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not create manual playbook");
     } finally {
       setBusy(false);
     }
@@ -286,7 +312,7 @@ export default function IncidentDetailPage() {
                         notes.map((note) => (
                           <article className="note-card" key={note.id}>
                             <span className="entry-meta">
-                              {note.author || "unknown"} · {formatIncidentDate(note.created_at)}
+                              {note.author || "unknown"} - {formatIncidentDate(note.created_at)}
                             </span>
                             <p>{note.body}</p>
                           </article>
@@ -304,8 +330,13 @@ export default function IncidentDetailPage() {
                       <div>
                         <h2>{playbook?.title || "Manual Playbook"}</h2>
                         {playbook?.summary ? <p className="section-subtitle">{playbook.summary}</p> : null}
+                        {!playbook && suggestedTemplate ? (
+                          <p className="section-subtitle">
+                            Suggested template: {suggestedTemplate.title}. {suggestedTemplate.summary}
+                          </p>
+                        ) : null}
                       </div>
-                      <span>{labelValue(playbook?.status)}</span>
+                      <span>{playbook ? labelValue(playbook.status) : "Not created"}</span>
                     </div>
                     <div className="playbook-list">
                       {playbook?.steps.length ? (
@@ -318,7 +349,7 @@ export default function IncidentDetailPage() {
                               <span className="step-meta">
                                 {step.is_required ? "Required" : "Optional"}
                                 {step.completed_at
-                                  ? ` · completed ${formatIncidentDate(step.completed_at)} by ${step.completed_by || "unknown"}`
+                                  ? ` - completed ${formatIncidentDate(step.completed_at)} by ${step.completed_by || "unknown"}`
                                   : ""}
                               </span>
                             </div>
@@ -340,7 +371,26 @@ export default function IncidentDetailPage() {
                           </article>
                         ))
                       ) : (
-                        <div className="empty-state">No playbook steps found.</div>
+                        <div className="empty-state playbook-empty">
+                          {suggestedTemplate ? (
+                            <>
+                              <p>
+                                Viewing this incident is read-only. Create a manual playbook only when analyst response
+                                work should begin.
+                              </p>
+                              <ul className="suggestion-list">
+                                {suggestedTemplate.steps.map((step) => (
+                                  <li key={step}>{step}</li>
+                                ))}
+                              </ul>
+                              <button className="button primary" onClick={handleCreatePlaybook} disabled={busy}>
+                                Create manual playbook
+                              </button>
+                            </>
+                          ) : (
+                            "No playbook steps found."
+                          )}
+                        </div>
                       )}
                     </div>
                   </section>
@@ -350,12 +400,16 @@ export default function IncidentDetailPage() {
                       <h2>Timeline</h2>
                       <span>{timeline.length}</span>
                     </div>
+                    <p className="section-subtitle">
+                      Newest first. Incident creation is when Wazuh data was stored; playbook, note, archive, approve,
+                      and reject dates are analyst action times.
+                    </p>
                     <div className="timeline-list">
                       {timeline.length ? (
                         timeline.map((event, index) => (
                           <article className={`timeline-entry source-${event.source}`} key={`${event.event_type}-${index}`}>
                             <span className="entry-meta">
-                              {formatIncidentDate(event.timestamp)} · {labelValue(event.event_type)} ·{" "}
+                              {formatIncidentDate(event.timestamp)} - {labelValue(event.event_type)} -{" "}
                               {event.actor || event.source}
                             </span>
                             <p>{event.message}</p>
@@ -372,12 +426,13 @@ export default function IncidentDetailPage() {
                       <h2>Action History</h2>
                       <span>{actions.length}</span>
                     </div>
+                    <p className="section-subtitle">Newest first. These are raw incident-specific action events.</p>
                     <div className="action-list">
                       {actions.length ? (
                         actions.map((event) => (
                           <article className="action-entry" key={event.id}>
                             <span className="entry-meta">
-                              {formatIncidentDate(event.created_at)} · {labelValue(event.event_type)} ·{" "}
+                              {formatIncidentDate(event.created_at)} - {labelValue(event.event_type)} -{" "}
                               {event.actor || "system"}
                             </span>
                             <p>{event.message}</p>

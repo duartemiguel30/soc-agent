@@ -180,10 +180,17 @@ export default function IncidentsPage() {
   ]);
 
   const summary = useMemo(() => {
+    const severityDistribution = { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 };
+    incidents.forEach((incident) => {
+      severityDistribution[getSeverity(incident)] += 1;
+    });
+
     return {
+      active: incidents.length,
       pending: incidents.filter(isPendingIncident).length,
       criticalSeverity: incidents.filter((incident) => getSeverity(incident) === "critical").length,
       criticalDecision: incidents.filter(isCriticalDecisionIncident).length,
+      severityDistribution,
     };
   }, [incidents]);
 
@@ -214,10 +221,32 @@ export default function IncidentsPage() {
               </div>
             </div>
 
-            <section className="incident-summary-strip" aria-label="Incident summary">
-              <span>{summary.pending} pending review</span>
-              <span>{summary.criticalSeverity} critical severity</span>
-              <span>{summary.criticalDecision} critical alert decisions</span>
+            <section className="metric-grid compact-metrics" aria-label="Active incident summary">
+              <div className="metric-card compact">
+                <span>Active incidents</span>
+                <strong>{summary.active}</strong>
+              </div>
+              <div className="metric-card compact">
+                <span>Pending review</span>
+                <strong>{summary.pending}</strong>
+              </div>
+              <div className="metric-card compact">
+                <span>Critical severity</span>
+                <strong>{summary.criticalSeverity}</strong>
+              </div>
+              <div className="metric-card compact">
+                <span>Critical alert decisions</span>
+                <strong>{summary.criticalDecision}</strong>
+              </div>
+            </section>
+
+            <section className="metric-grid compact-metrics" aria-label="Active severity distribution">
+              {Object.entries(summary.severityDistribution).map(([severity, count]) => (
+                <div className="metric-card compact" key={severity}>
+                  <span>{labelValue(severity)}</span>
+                  <strong>{count}</strong>
+                </div>
+              ))}
             </section>
 
             <section className="controls-panel sticky-controls" aria-label="Incident controls">

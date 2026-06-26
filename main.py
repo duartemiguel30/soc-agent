@@ -22,7 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from playbooks.service import get_or_create_playbook, log_action_event
+from playbooks.service import get_or_create_playbook, load_playbook, log_action_event, template_suggestion
 from security import hash_session_token, verify_password
 from sqlalchemy.orm import Session
 
@@ -504,10 +504,25 @@ def get_incident_playbook(
     db: Session = Depends(get_db),
     admin: dict = Depends(get_current_admin),
 ):
-    """Return or lazily create the deterministic manual response playbook for an incident."""
+    """Return an existing manual playbook or a suggested template without creating rows."""
     incident = get_incident_or_404(db, incident_id)
-    playbook, steps, _created = get_or_create_playbook(db, incident, current_admin_username(admin))
-    return serialize_playbook(playbook, steps)
+    playbook, steps = load_playbook(db, incident_id)
+    return {
+        "playbook": serialize_playbook(playbook, steps) if playbook else None,
+        "suggested_template": None if playbook else template_suggestion(incident),
+    }
+
+
+@app.post("/incidents/{incident_id}/playbook")
+def create_incident_playbook(
+    incident_id: str,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    """Create the deterministic manual response playbook when an analyst explicitly requests it."""
+    incident = get_incident_or_404(db, incident_id)
+    playbook, steps, created = get_or_create_playbook(db, incident, current_admin_username(admin))
+    return {"playbook": serialize_playbook(playbook, steps), "created": created}
 
 
 @app.patch("/playbook/steps/{step_id}")
