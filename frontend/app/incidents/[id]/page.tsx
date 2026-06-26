@@ -7,6 +7,7 @@ import { AppShell } from "@/app/components/AppShell";
 import { AuthGuard } from "@/app/components/AuthGuard";
 import {
   addIncidentNote,
+  archiveIncident,
   approveIncident,
   getIncident,
   getIncidentPlaybook,
@@ -20,6 +21,7 @@ import {
   PlaybookStep,
   rejectIncident,
   TimelineEvent,
+  unarchiveIncident,
   updatePlaybookStep,
 } from "@/lib/api";
 import {
@@ -141,6 +143,26 @@ export default function IncidentDetailPage() {
     }
   }
 
+  async function runArchiveAction(archived?: boolean) {
+    setBusy(true);
+    setNotice(null);
+    setError(null);
+    try {
+      if (archived) {
+        await unarchiveIncident(incidentId);
+        setNotice("Incident restored to active views.");
+      } else {
+        await archiveIncident(incidentId);
+        setNotice("Incident archived.");
+      }
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Archive action failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <AuthGuard>
       {(user) => (
@@ -183,6 +205,14 @@ export default function IncidentDetailPage() {
                       <DetailRow label="Rule ID" value={incident.rule_id} />
                       <DetailRow label="Rule level" value={incident.rule_level} />
                       <DetailRow label="Created" value={formatIncidentDate(incident.created_at)} />
+                      <DetailRow
+                        label="Archive state"
+                        value={
+                          incident.is_archived
+                            ? `Archived ${formatIncidentDate(incident.archive_state?.archived_at)}`
+                            : "Active"
+                        }
+                      />
                     </div>
                     {pending ? (
                       <div className="action-row" style={{ marginTop: 14 }}>
@@ -193,6 +223,23 @@ export default function IncidentDetailPage() {
                           Reject
                         </button>
                       </div>
+                    ) : null}
+                    {incident.is_archived ||
+                    (!pending && ["approved", "rejected", "processed"].includes((incident.status || "").toLowerCase())) ? (
+                      <div className="action-row" style={{ marginTop: 14 }}>
+                        <button
+                          className="button secondary"
+                          onClick={() => runArchiveAction(incident.is_archived)}
+                          disabled={busy}
+                        >
+                          {incident.is_archived ? "Unarchive" : "Archive"}
+                        </button>
+                      </div>
+                    ) : null}
+                    {incident.archive_state?.reason ? (
+                      <p className="section-subtitle" style={{ marginTop: 14 }}>
+                        Archive reason: {incident.archive_state.reason}
+                      </p>
                     ) : null}
                   </section>
 

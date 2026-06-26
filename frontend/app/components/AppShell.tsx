@@ -8,6 +8,7 @@ import { AdminUser, logout } from "@/lib/api";
 const navItems = [
   { href: "/dashboard", label: "Dashboard" },
   { href: "/incidents", label: "Incidents" },
+  { href: "/archive", label: "Archive" },
   { href: "/report", label: "Report" },
 ];
 

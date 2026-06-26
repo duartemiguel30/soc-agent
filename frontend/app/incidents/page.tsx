@@ -94,7 +94,7 @@ export default function IncidentsPage() {
   const refresh = useCallback(async () => {
     setError(null);
     try {
-      setIncidents(await listIncidents());
+      setIncidents(await listIncidents("false"));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load incidents");
     } finally {

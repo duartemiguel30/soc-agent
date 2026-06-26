@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/app/components/AppShell";
 import { AuthGuard } from "@/app/components/AuthGuard";
 import { IncidentList } from "@/app/components/IncidentList";
-import { Incident, listIncidents, listPendingIncidents } from "@/lib/api";
+import { Incident, listArchivedIncidents, listIncidents } from "@/lib/api";
 import {
   getSeverity,
   isCriticalSeverityIncident,
@@ -15,7 +15,8 @@ import {
 
 export default function DashboardPage() {
   const [incidents, setIncidents] = useState<Incident[]>([]);
-  const [pending, setPending] = useState<Incident[]>([]);
+  const [archivedCount, setArchivedCount] = useState(0);
+  const [storedCount, setStoredCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
@@ -23,9 +24,14 @@ export default function DashboardPage() {
   const refresh = useCallback(async () => {
     setError(null);
     try {
-      const [allIncidents, pendingIncidents] = await Promise.all([listIncidents(), listPendingIncidents()]);
-      setIncidents(allIncidents);
-      setPending(pendingIncidents);
+      const [activeIncidents, allIncidents, archivedIncidents] = await Promise.all([
+        listIncidents("false"),
+        listIncidents("all"),
+        listArchivedIncidents(),
+      ]);
+      setIncidents(activeIncidents);
+      setStoredCount(allIncidents.length);
+      setArchivedCount(archivedIncidents.length);
       setLastUpdated(new Date().toLocaleTimeString());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load incidents");
@@ -46,15 +52,16 @@ export default function DashboardPage() {
   const counts = useMemo(() => {
     return {
       total: incidents.length,
-      pending: pending.length,
+      pending: incidents.filter(isPendingIncident).length,
       criticalSeverity: incidents.filter(isCriticalSeverityIncident).length,
       approved: incidents.filter((incident) => incident.status === "approved").length,
       rejected: incidents.filter((incident) => incident.status === "rejected").length,
       processed: incidents.filter(isProcessedIncident).length,
     };
-  }, [incidents, pending]);
+  }, [incidents]);
 
   const recent = incidents.slice(0, 5);
+  const pending = incidents.filter(isPendingIncident);
   const severityDistribution = useMemo(() => {
     const distribution = { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 };
     incidents.forEach((incident) => {
@@ -83,9 +90,9 @@ export default function DashboardPage() {
 
             {error ? <div className="alert error">{error}</div> : null}
 
-            <section className="metric-grid" aria-label="Incident counts">
+            <section className="metric-grid" aria-label="Active incident counts">
               <div className="metric-card">
-                <span>Total</span>
+                <span>Active total</span>
                 <strong>{counts.total}</strong>
               </div>
               <div className="metric-card">
@@ -110,7 +117,24 @@ export default function DashboardPage() {
               </div>
             </section>
 
-            <div className="dashboard-grid">
+            <section className="panel severity-strip-panel">
+              <div className="section-head">
+                <h2>Severity Distribution</h2>
+                <span>
+                  {archivedCount} archived / {storedCount} stored
+                </span>
+              </div>
+              <div className="severity-strip">
+                {Object.entries(severityDistribution).map(([severity, count]) => (
+                  <div key={severity} className="distribution-row compact">
+                    <span>{labelValue(severity)}</span>
+                    <strong>{count}</strong>
+                  </div>
+                ))}
+              </div>
+            </section>
+
+            <div className="split-grid">
               <section className="panel">
                 <div className="section-head">
                   <h2>Pending Review</h2>
@@ -132,20 +156,6 @@ export default function DashboardPage() {
                 ) : (
                   <IncidentList incidents={recent} onChanged={refresh} compact detailed={false} />
                 )}
-              </section>
-              <section className="panel dashboard-side-panel">
-                <div className="section-head">
-                  <h2>Severity Distribution</h2>
-                  <span>{incidents.length} total</span>
-                </div>
-                <div className="distribution-list">
-                  {Object.entries(severityDistribution).map(([severity, count]) => (
-                    <div key={severity} className="distribution-row">
-                      <span>{labelValue(severity)}</span>
-                      <strong>{count}</strong>
-                    </div>
-                  ))}
-                </div>
               </section>
             </div>
           </main>

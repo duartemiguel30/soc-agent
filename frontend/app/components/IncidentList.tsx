@@ -1,6 +1,6 @@
 "use client";
 
-import { approveIncident, Incident, rejectIncident } from "@/lib/api";
+import { archiveIncident, approveIncident, Incident, rejectIncident, unarchiveIncident } from "@/lib/api";
 import {
   formatIncidentDate,
   getSeverity,
@@ -18,6 +18,7 @@ type IncidentListProps = {
   detailed?: boolean;
   onActionResult?: (message: string, type: "success" | "error") => void;
   linkToDetail?: boolean;
+  showArchiveActions?: boolean;
 };
 
 export function IncidentList({
@@ -27,6 +28,7 @@ export function IncidentList({
   detailed = true,
   onActionResult,
   linkToDetail = true,
+  showArchiveActions = true,
 }: IncidentListProps) {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -51,6 +53,27 @@ export function IncidentList({
     }
   }
 
+  async function runArchiveAction(id: string, archived?: boolean) {
+    setBusyId(id);
+    setError(null);
+    try {
+      if (archived) {
+        await unarchiveIncident(id);
+        onActionResult?.("Incident restored to active views.", "success");
+      } else {
+        await archiveIncident(id);
+        onActionResult?.("Incident archived.", "success");
+      }
+      await onChanged?.();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Archive action failed";
+      setError(message);
+      onActionResult?.(message, "error");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   if (!incidents.length) {
     return <div className="empty-state">No incidents match this view.</div>;
   }
@@ -61,6 +84,8 @@ export function IncidentList({
       {incidents.map((incident) => {
         const pending = isPendingIncident(incident);
         const severity = getSeverity(incident);
+        const status = (incident.status || "").toLowerCase();
+        const canArchive = showArchiveActions && !pending && ["approved", "rejected", "processed"].includes(status);
         return (
           <article key={incident.id} className="incident-card">
             <div className="incident-head">
@@ -143,6 +168,18 @@ export function IncidentList({
                   disabled={busyId === incident.id}
                 >
                   Reject
+                </button>
+              </div>
+            ) : null}
+
+            {canArchive || incident.is_archived ? (
+              <div className="action-row">
+                <button
+                  className="button secondary"
+                  onClick={() => runArchiveAction(incident.id, incident.is_archived)}
+                  disabled={busyId === incident.id}
+                >
+                  {incident.is_archived ? "Unarchive" : "Archive"}
                 </button>
               </div>
             ) : null}

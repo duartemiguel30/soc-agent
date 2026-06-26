@@ -99,3 +99,14 @@ class IncidentActionEvent(Base):
     message = Column(Text, nullable=False)
     metadata_json = Column(Text, nullable=True)
     created_at = Column(DateTime, default=func.now(), nullable=False)
+
+
+class IncidentArchiveState(Base):
+    __tablename__ = "incident_archive_states"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    incident_id = Column(String, ForeignKey("incidents.id"), unique=True, index=True, nullable=False)
+    archived_at = Column(DateTime, nullable=False)
+    archived_by = Column(String, nullable=True)
+    reason = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False)

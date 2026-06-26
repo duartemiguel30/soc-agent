@@ -22,6 +22,17 @@ export type Incident = {
   decision?: string | null;
   status?: string | null;
   created_at?: string | null;
+  is_archived?: boolean;
+  archive_state?: IncidentArchiveState | null;
+};
+
+export type IncidentArchiveState = {
+  id: number;
+  incident_id: string;
+  archived_at?: string | null;
+  archived_by?: string | null;
+  reason?: string | null;
+  created_at?: string | null;
 };
 
 export type ReportResponse = {
@@ -145,8 +156,8 @@ export function getCurrentUser() {
   return request<AdminUser>("/auth/me");
 }
 
-export function listIncidents() {
-  return request<Incident[]>("/incidents");
+export function listIncidents(archived: "all" | "true" | "false" = "all") {
+  return request<Incident[]>(`/incidents?archived=${archived}`);
 }
 
 export function getIncident(id: string) {
@@ -157,6 +168,10 @@ export function listPendingIncidents() {
   return request<Incident[]>("/incidents/pending");
 }
 
+export function listArchivedIncidents() {
+  return request<Incident[]>("/incidents/archive");
+}
+
 export function approveIncident(id: string) {
   return request<{ incident_id: string; status: string; action?: string }>(`/incidents/${id}/approve`, {
     method: "POST",
@@ -165,6 +180,22 @@ export function approveIncident(id: string) {
 
 export function rejectIncident(id: string) {
   return request<{ incident_id: string; status: string }>(`/incidents/${id}/reject`, {
+    method: "POST",
+  });
+}
+
+export function archiveIncident(id: string, reason?: string) {
+  return request<{ incident_id: string; is_archived: boolean; archive_state?: IncidentArchiveState }>(
+    `/incidents/${id}/archive`,
+    {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    },
+  );
+}
+
+export function unarchiveIncident(id: string) {
+  return request<{ incident_id: string; is_archived: boolean }>(`/incidents/${id}/unarchive`, {
     method: "POST",
   });
 }

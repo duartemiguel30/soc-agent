@@ -362,7 +362,14 @@ button:disabled {
 .dashboard-grid {
   display: grid;
   align-items: start;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(220px, 0.65fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.split-grid {
+  display: grid;
+  align-items: start;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 18px;
 }
 
@@ -546,6 +553,20 @@ button:disabled {
   border-radius: 8px;
   background: rgba(7, 17, 15, 0.5);
   padding: 11px 12px;
+}
+
+.severity-strip-panel {
+  margin-bottom: 18px;
+}
+
+.severity-strip {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(110px, 1fr));
+  gap: 10px;
+}
+
+.distribution-row.compact {
+  min-height: 54px;
 }
 
 .distribution-row span,
@@ -874,17 +895,14 @@ button:disabled {
   }
 
   .nav-list {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     margin-top: 22px;
   }
 
   .metric-grid,
-  .dashboard-grid {
+  .dashboard-grid,
+  .severity-strip {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .dashboard-side-panel {
-    grid-column: 1 / -1;
   }
 
   .filter-grid {
@@ -909,7 +927,9 @@ button:disabled {
 
   .dashboard-grid,
   .detail-grid,
+  .split-grid,
   .metric-grid,
+  .severity-strip,
   .incident-grid,
   .incident-grid.compact,
   .filter-grid,

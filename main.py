@@ -12,6 +12,7 @@ from db.models import (
     AdminUser,
     Incident,
     IncidentActionEvent,
+    IncidentArchiveState,
     IncidentNote,
     IncidentPlaybook,
     IncidentPlaybookStep,
@@ -58,6 +59,10 @@ class PlaybookStepUpdate(BaseModel):
 
 class NoteCreate(BaseModel):
     body: str
+
+
+class ArchiveRequest(BaseModel):
+    reason: str | None = None
 
 
 def utc_now() -> datetime:
@@ -108,8 +113,21 @@ def get_incident_or_404(db: Session, incident_id: str) -> Incident:
     return incident
 
 
-def serialize_incident(incident: Incident) -> dict:
+def serialize_archive_state(archive_state: IncidentArchiveState | None) -> dict | None:
+    if not archive_state:
+        return None
     return {
+        "id": archive_state.id,
+        "incident_id": archive_state.incident_id,
+        "archived_at": archive_state.archived_at,
+        "archived_by": archive_state.archived_by,
+        "reason": archive_state.reason,
+        "created_at": archive_state.created_at,
+    }
+
+
+def serialize_incident(incident: Incident, archive_state: IncidentArchiveState | None = None) -> dict:
+    data = {
         "id": incident.id,
         "agent_name": incident.agent_name,
         "rule_id": incident.rule_id,
@@ -125,6 +143,31 @@ def serialize_incident(incident: Incident) -> dict:
         "status": incident.status,
         "created_at": incident.created_at,
     }
+    data["archive_state"] = serialize_archive_state(archive_state)
+    data["is_archived"] = archive_state is not None
+    return data
+
+
+def get_archive_state(db: Session, incident_id: str) -> IncidentArchiveState | None:
+    return db.query(IncidentArchiveState).filter(IncidentArchiveState.incident_id == incident_id).first()
+
+
+def incident_query_with_archive_filter(db: Session, archived: str | None):
+    query = db.query(Incident)
+    normalized = (archived or "all").lower()
+    if normalized == "false":
+        query = query.outerjoin(
+            IncidentArchiveState,
+            IncidentArchiveState.incident_id == Incident.id,
+        ).filter(IncidentArchiveState.id.is_(None))
+    elif normalized == "true":
+        query = query.join(IncidentArchiveState, IncidentArchiveState.incident_id == Incident.id)
+    elif normalized != "all":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="archived must be one of: true, false, all",
+        )
+    return query
 
 
 def serialize_playbook(playbook: IncidentPlaybook, steps: list[IncidentPlaybookStep]) -> dict:
@@ -355,15 +398,38 @@ async def receive_alert(alert: dict, db: Session = Depends(get_db)):
 
 
 @app.get("/incidents")
-def list_incidents(db: Session = Depends(get_db), admin: dict = Depends(get_current_admin)):
+def list_incidents(
+    archived: str = "all",
+    db: Session = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
     """List all stored incidents."""
-    return db.query(Incident).order_by(Incident.created_at.desc()).all()
+    incidents = incident_query_with_archive_filter(db, archived).order_by(Incident.created_at.desc()).all()
+    if archived.lower() == "all":
+        archive_states = {state.incident_id: state for state in db.query(IncidentArchiveState).all()}
+        return [serialize_incident(incident, archive_states.get(incident.id)) for incident in incidents]
+    if archived.lower() == "true":
+        archive_states = {state.incident_id: state for state in db.query(IncidentArchiveState).all()}
+        return [serialize_incident(incident, archive_states.get(incident.id)) for incident in incidents]
+    return [serialize_incident(incident) for incident in incidents]
 
 
 @app.get("/incidents/pending")
 def list_pending(db: Session = Depends(get_db), admin: dict = Depends(get_current_admin)):
     """List incidents awaiting human review."""
     return db.query(Incident).filter(Incident.status == "pending_human").all()
+
+
+@app.get("/incidents/archive")
+def list_archived_incidents(db: Session = Depends(get_db), admin: dict = Depends(get_current_admin)):
+    """Return archived incidents with archive metadata."""
+    rows = (
+        db.query(Incident, IncidentArchiveState)
+        .join(IncidentArchiveState, IncidentArchiveState.incident_id == Incident.id)
+        .order_by(IncidentArchiveState.archived_at.desc())
+        .all()
+    )
+    return [serialize_incident(incident, archive_state) for incident, archive_state in rows]
 
 
 @app.get("/incidents/{incident_id}")
@@ -373,7 +439,63 @@ def get_incident_detail(
     admin: dict = Depends(get_current_admin),
 ):
     """Return a single incident with stored AI analysis fields."""
-    return serialize_incident(get_incident_or_404(db, incident_id))
+    incident = get_incident_or_404(db, incident_id)
+    return serialize_incident(incident, get_archive_state(db, incident_id))
+
+
+@app.post("/incidents/{incident_id}/archive")
+def archive_incident(
+    incident_id: str,
+    payload: ArchiveRequest | None = None,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    """Archive an incident for dashboard/list visibility without changing its operational status."""
+    get_incident_or_404(db, incident_id)
+    actor = current_admin_username(admin)
+    archive_state = get_archive_state(db, incident_id)
+    if not archive_state:
+        archive_state = IncidentArchiveState(
+            incident_id=incident_id,
+            archived_at=utc_now(),
+            archived_by=actor,
+            reason=(payload.reason.strip() if payload and payload.reason else None),
+        )
+        db.add(archive_state)
+        log_action_event(
+            db,
+            incident_id,
+            actor,
+            "incident_archived",
+            "Incident archived for dashboard/list organization.",
+            {"reason": archive_state.reason} if archive_state.reason else None,
+        )
+        db.commit()
+        db.refresh(archive_state)
+    return {"incident_id": incident_id, "is_archived": True, "archive_state": serialize_archive_state(archive_state)}
+
+
+@app.post("/incidents/{incident_id}/unarchive")
+def unarchive_incident(
+    incident_id: str,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    """Remove archive state without changing incident operational status."""
+    get_incident_or_404(db, incident_id)
+    actor = current_admin_username(admin)
+    archive_state = get_archive_state(db, incident_id)
+    if archive_state:
+        db.delete(archive_state)
+        log_action_event(
+            db,
+            incident_id,
+            actor,
+            "incident_unarchived",
+            "Incident restored to active views.",
+        )
+        db.commit()
+    return {"incident_id": incident_id, "is_archived": False}
 
 
 @app.get("/incidents/{incident_id}/playbook")

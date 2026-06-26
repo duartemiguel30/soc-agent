@@ -63,6 +63,7 @@ Protected backend routes:
 
 - `GET /incidents`
 - `GET /incidents/pending`
+- `GET /incidents/archive`
 - `GET /incidents/{id}`
 - `GET /incidents/{id}/playbook`
 - `PATCH /playbook/steps/{step_id}`
@@ -70,6 +71,8 @@ Protected backend routes:
 - `POST /incidents/{id}/notes`
 - `GET /incidents/{id}/timeline`
 - `GET /incidents/{id}/actions`
+- `POST /incidents/{id}/archive`
+- `POST /incidents/{id}/unarchive`
 - `POST /incidents/{id}/approve`
 - `POST /incidents/{id}/reject`
 - `GET /report`
@@ -81,6 +84,20 @@ Public backend routes:
 - `GET /` serving the legacy fallback dashboard
 
 The Wazuh webhook remains public because Wazuh calls it directly.
+
+## Incident Archive
+
+Incident `status` remains the operational outcome, such as `pending_human`, `approved`, `rejected`, or `processed`. Archive state is separate visibility/lifecycle organization stored in the additive `incident_archive_states` table. Archiving an incident does not change its operational status.
+
+An incident is archived when it has one row in `incident_archive_states`. The row stores `archived_at`, `archived_by`, and an optional `reason`. Dashboard and active incident views request non-archived incidents, while the Next.js `/archive` page shows archived incidents and supports unarchiving.
+
+Archive endpoints:
+
+- `POST /incidents/{id}/archive`
+- `POST /incidents/{id}/unarchive`
+- `GET /incidents/archive`
+
+`GET /incidents` remains compatible and supports `?archived=false`, `?archived=true`, and `?archived=all`.
 
 ## Manual Incident Response Playbooks
 
