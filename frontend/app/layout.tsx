@@ -12,16 +12,19 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" data-theme="light">
+    <html lang="en" data-theme="light" suppressHydrationWarning>
       <head>
         <script
           dangerouslySetInnerHTML={{
             __html: `
 try {
-  var theme = localStorage.getItem("soc_theme");
-  document.documentElement.dataset.theme = theme === "dark" ? "dark" : "light";
+  var stored = localStorage.getItem("soc_theme");
+  var theme = stored === "dark" || stored === "light" ? stored : "light";
+  document.documentElement.dataset.theme = theme;
+  document.documentElement.style.colorScheme = theme;
 } catch (_) {
   document.documentElement.dataset.theme = "light";
+  document.documentElement.style.colorScheme = "light";
 }
 `,
           }}

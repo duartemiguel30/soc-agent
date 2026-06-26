@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { ReactNode, useEffect, useState } from "react";
+import { ReactNode, useEffect, useState, useSyncExternalStore } from "react";
 import { AdminUser, logout } from "@/lib/api";
 
 const navItems = [
@@ -18,12 +18,56 @@ type AppShellProps = {
 };
 
 type Theme = "light" | "dark";
+const THEME_STORAGE_KEY = "soc_theme";
+const THEME_CHANGE_EVENT = "soc-theme-change";
 
-function getInitialTheme(): Theme {
+function normalizeTheme(value: string | null): Theme {
+  return value === "dark" || value === "light" ? value : "light";
+}
+
+function readStoredTheme(): Theme {
   if (typeof window === "undefined") {
     return "light";
   }
-  return window.localStorage.getItem("soc_theme") === "dark" ? "dark" : "light";
+  try {
+    return normalizeTheme(window.localStorage.getItem(THEME_STORAGE_KEY));
+  } catch {
+    return "light";
+  }
+}
+
+function applyTheme(theme: Theme) {
+  if (typeof document === "undefined") {
+    return;
+  }
+  document.documentElement.dataset.theme = theme;
+  document.documentElement.style.colorScheme = theme;
+}
+
+function writeStoredTheme(theme: Theme) {
+  try {
+    window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+  } catch {
+    // Theme persistence is optional; keep the UI usable if storage is blocked.
+  }
+  applyTheme(theme);
+  window.dispatchEvent(new Event(THEME_CHANGE_EVENT));
+}
+
+function subscribeTheme(callback: () => void) {
+  if (typeof window === "undefined") {
+    return () => {};
+  }
+  const handleThemeChange = () => {
+    applyTheme(readStoredTheme());
+    callback();
+  };
+  window.addEventListener("storage", handleThemeChange);
+  window.addEventListener(THEME_CHANGE_EVENT, handleThemeChange);
+  return () => {
+    window.removeEventListener("storage", handleThemeChange);
+    window.removeEventListener(THEME_CHANGE_EVENT, handleThemeChange);
+  };
 }
 
 function SunIcon() {
@@ -48,11 +92,11 @@ export function AppShell({ user, children }: AppShellProps) {
   const router = useRouter();
   const [loggingOut, setLoggingOut] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [theme, setTheme] = useState<Theme>(getInitialTheme);
+  const theme = useSyncExternalStore(subscribeTheme, readStoredTheme, () => "light");
   const nextTheme = theme === "light" ? "dark" : "light";
 
   function toggleTheme() {
-    setTheme(nextTheme);
+    writeStoredTheme(nextTheme);
   }
 
   async function handleLogout() {
@@ -78,11 +122,6 @@ export function AppShell({ user, children }: AppShellProps) {
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [menuOpen]);
-
-  useEffect(() => {
-    document.documentElement.dataset.theme = theme;
-    window.localStorage.setItem("soc_theme", theme);
-  }, [theme]);
 
   return (
     <div className="app-shell">
