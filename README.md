@@ -301,14 +301,16 @@ http://192.168.56.105:3000
 
 The default UI uses a clean light admin-console theme. Theme colors are centralized in `frontend/app/globals.css` under `:root`; the fastest presentation-prep variables to adjust are `--bg`, `--panel`, `--line`, `--text`, `--muted`, `--accent`, `--accent-strong`, and the severity variables.
 
-Dashboard charts are computed in the frontend from existing incident API responses. They use fields such as `severity`, `decision`, `mitre_technique`, `agent_name`, `event_count`, `first_seen`, `last_seen`, and `created_at`. No heavy chart dependency is used; charts are plain React, CSS, and SVG.
+Dashboard charts are computed in the frontend from existing incident API responses. They use fields such as `severity`, `decision`, `mitre_technique`, `agent_name`, `event_count`, `first_seen`, `last_seen`, and `created_at`. No heavy chart dependency is used; charts are plain React, CSS, and SVG. The dashboard uses a compact responsive chart layout with event evolution beside severity/decision distributions.
+
+Mobile navigation uses a right-side drawer with an overlay; logout remains inside the drawer. Incident detail uses explicit responsive columns on desktop to avoid large grid gaps, then collapses to one ordered column on narrow screens.
 
 Current UI pages:
 
 - `/dashboard`: operational metrics, event/alert evolution, MITRE distribution, top agents, severity distribution, decision distribution, and navigation shortcuts.
 - `/incidents`: active incident triage, filtering, approve/reject, archive, and detail links.
 - `/archive`: archived incident search, filtering, event aggregation metadata, and unarchive.
-- `/incidents/{id}`: read-only incident fields plus alert activity, observables, response actions, manual playbook, notes, timeline, and action history in a responsive two-column desktop layout.
+- `/incidents/{id}`: read-only incident fields plus alert activity, observables, response actions, manual playbook, notes, timeline, and action history in a responsive two-column/masonry-style desktop layout.
 - `/report`: global executive report generated from stored incidents.
 
 The frontend uses FastAPI's HttpOnly cookie through `/backend/*`. It does not store auth tokens in `localStorage` or `sessionStorage`.

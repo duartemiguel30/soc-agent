@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { ReactNode, useState } from "react";
+import { ReactNode, useEffect, useState } from "react";
 import { AdminUser, logout } from "@/lib/api";
 
 const navItems = [
@@ -32,6 +32,21 @@ export function AppShell({ user, children }: AppShellProps) {
     }
   }
 
+  useEffect(() => {
+    if (!menuOpen) {
+      return;
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setMenuOpen(false);
+      }
+    }
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [menuOpen]);
+
   return (
     <div className="app-shell">
       <header className="app-header">
@@ -47,6 +62,7 @@ export function AppShell({ user, children }: AppShellProps) {
           <button
             className="menu-toggle"
             type="button"
+            aria-label="Open navigation menu"
             aria-expanded={menuOpen}
             aria-controls="primary-navigation"
             onClick={() => setMenuOpen((open) => !open)}
@@ -59,7 +75,30 @@ export function AppShell({ user, children }: AppShellProps) {
             <span>Menu</span>
           </button>
 
+          {menuOpen ? (
+            <button
+              className="drawer-backdrop"
+              type="button"
+              aria-label="Close navigation menu"
+              onClick={() => setMenuOpen(false)}
+            />
+          ) : null}
+
           <div className={menuOpen ? "header-menu open" : "header-menu"} id="primary-navigation">
+            <div className="drawer-head">
+              <div>
+                <strong>Navigation</strong>
+                <span>SOC AI Agent</span>
+              </div>
+              <button
+                className="button ghost drawer-close"
+                type="button"
+                aria-label="Close navigation menu"
+                onClick={() => setMenuOpen(false)}
+              >
+                X
+              </button>
+            </div>
             <nav className="nav-list" aria-label="Primary navigation">
               {navItems.map((item) => (
                 <Link

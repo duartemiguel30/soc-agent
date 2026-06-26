@@ -393,7 +393,7 @@ export default function IncidentDetailPage() {
               <div className="loading-panel">Loading incident detail...</div>
             ) : (
               <div className="detail-grid">
-                <div className="detail-stack">
+                <div className="detail-column detail-column-left">
                   <section className="panel detail-overview-card">
                     <div className="section-head">
                       <h2>Incident Overview</h2>
@@ -522,53 +522,6 @@ export default function IncidentDetailPage() {
                     </div>
                   </section>
 
-                  <section className="panel detail-response-card">
-                    <div className="section-head">
-                      <h2>Response Actions</h2>
-                      <span>{responseActions.length}</span>
-                    </div>
-                    <p className="section-subtitle">
-                      Actions are shown by context. Suggested actions match incident evidence or AI recommendation text;
-                      other available actions are possible but not specifically recommended.
-                    </p>
-                    <div className="response-action-groups">
-                      <div className="response-action-group">
-                        <h3>Suggested response actions</h3>
-                        {groupedResponseActions.suggested.length ? (
-                          <div className="response-action-list">
-                            {groupedResponseActions.suggested.map((action) => renderAvailableResponseAction(action, "suggested"))}
-                          </div>
-                        ) : (
-                          <div className="empty-state compact">No response actions are specifically suggested for this incident.</div>
-                        )}
-                      </div>
-
-                      {groupedResponseActions.available.length ? (
-                        <div className="response-action-group secondary-group">
-                          <h3>Other available actions</h3>
-                          <div className="response-action-list">
-                            {groupedResponseActions.available.map((action) => renderAvailableResponseAction(action, "available"))}
-                          </div>
-                        </div>
-                      ) : null}
-
-                      {groupedResponseActions.unavailable.length ? (
-                        <details className="unavailable-actions">
-                          <summary>Unavailable actions ({groupedResponseActions.unavailable.length})</summary>
-                          <div className="unavailable-action-list">
-                            {groupedResponseActions.unavailable.map((action) => (
-                              <div className="unavailable-action-row" key={action.key}>
-                                <strong>{action.name}</strong>
-                                <span>Unavailable: {action.availability_reason}</span>
-                                <small>Requires: {action.required_observables.map(labelValue).join(", ")}</small>
-                              </div>
-                            ))}
-                          </div>
-                        </details>
-                      ) : null}
-                    </div>
-                  </section>
-
                   <section className="panel detail-notes-card">
                     <div className="section-head">
                       <h2>Analyst Notes</h2>
@@ -604,7 +557,7 @@ export default function IncidentDetailPage() {
                   </section>
                 </div>
 
-                <div className="detail-stack">
+                <div className="detail-column detail-column-right">
                   <section className="panel detail-playbook-card">
                     <div className="section-head">
                       <div>
@@ -721,6 +674,53 @@ export default function IncidentDetailPage() {
                       ) : (
                         <div className="empty-state">No action events recorded yet.</div>
                       )}
+                    </div>
+                  </section>
+
+                  <section className="panel detail-response-card">
+                    <div className="section-head">
+                      <h2>Response Actions</h2>
+                      <span>{responseActions.length}</span>
+                    </div>
+                    <p className="section-subtitle">
+                      Actions are shown by context. Suggested actions match incident evidence or AI recommendation text;
+                      other available actions are possible but not specifically recommended.
+                    </p>
+                    <div className="response-action-groups">
+                      <div className="response-action-group">
+                        <h3>Suggested response actions</h3>
+                        {groupedResponseActions.suggested.length ? (
+                          <div className="response-action-list">
+                            {groupedResponseActions.suggested.map((action) => renderAvailableResponseAction(action, "suggested"))}
+                          </div>
+                        ) : (
+                          <div className="empty-state compact">No response actions are specifically suggested for this incident.</div>
+                        )}
+                      </div>
+
+                      {groupedResponseActions.available.length ? (
+                        <div className="response-action-group secondary-group">
+                          <h3>Other available actions</h3>
+                          <div className="response-action-list">
+                            {groupedResponseActions.available.map((action) => renderAvailableResponseAction(action, "available"))}
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {groupedResponseActions.unavailable.length ? (
+                        <details className="unavailable-actions">
+                          <summary>Unavailable actions ({groupedResponseActions.unavailable.length})</summary>
+                          <div className="unavailable-action-list">
+                            {groupedResponseActions.unavailable.map((action) => (
+                              <div className="unavailable-action-row" key={action.key}>
+                                <strong>{action.name}</strong>
+                                <span>Unavailable: {action.availability_reason}</span>
+                                <small>Requires: {action.required_observables.map(labelValue).join(", ")}</small>
+                              </div>
+                            ))}
+                          </div>
+                        </details>
+                      ) : null}
                     </div>
                   </section>
                 </div>

@@ -210,6 +210,11 @@ button:disabled {
   min-width: 0;
 }
 
+.drawer-head,
+.drawer-backdrop {
+  display: none;
+}
+
 .nav-link {
   border: 1px solid transparent;
   border-radius: 8px;
@@ -478,8 +483,8 @@ button:disabled {
 
 .dashboard-chart-grid {
   display: grid;
-  align-items: stretch;
-  grid-template-columns: minmax(0, 1.3fr) minmax(300px, 0.7fr);
+  align-items: start;
+  grid-template-columns: minmax(0, 1.42fr) minmax(300px, 0.58fr);
   gap: 18px;
   margin-bottom: 18px;
 }
@@ -487,11 +492,20 @@ button:disabled {
 .chart-panel {
   display: grid;
   align-content: start;
-  min-height: 280px;
+  min-height: 0;
 }
 
-.chart-panel.wide {
-  grid-row: span 2;
+.chart-evolution {
+  min-height: 245px;
+}
+
+.chart-side-stack {
+  display: grid;
+  gap: 18px;
+}
+
+.chart-secondary {
+  min-height: 210px;
 }
 
 .bar-chart {
@@ -500,7 +514,7 @@ button:disabled {
   grid-auto-flow: column;
   grid-auto-columns: minmax(54px, 1fr);
   gap: 10px;
-  min-height: 210px;
+  min-height: 170px;
   overflow-x: auto;
   padding: 4px 2px 0;
 }
@@ -516,7 +530,7 @@ button:disabled {
 .bar-track {
   display: flex;
   align-items: end;
-  height: 150px;
+  height: 112px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: linear-gradient(180deg, #f8fafc 0%, #eef3f9 100%);
@@ -574,14 +588,14 @@ button:disabled {
 
 .donut-chart {
   display: grid;
-  grid-template-columns: 138px minmax(0, 1fr);
+  grid-template-columns: 118px minmax(0, 1fr);
   align-items: center;
-  gap: 14px;
+  gap: 12px;
 }
 
 .donut-chart svg {
-  width: 138px;
-  height: 138px;
+  width: 118px;
+  height: 118px;
 }
 
 .donut-base,
@@ -1089,8 +1103,11 @@ button:disabled {
   gap: 18px;
 }
 
+.detail-column,
 .detail-stack {
-  display: contents;
+  display: grid;
+  align-content: start;
+  gap: 18px;
 }
 
 .detail-grid .panel {
@@ -1468,26 +1485,87 @@ button:disabled {
     display: inline-flex;
   }
 
+  .drawer-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    display: block;
+    border: 0;
+    background: rgba(15, 23, 42, 0.32);
+    padding: 0;
+  }
+
   .header-menu {
-    display: none;
-    grid-column: 1 / -1;
-    width: 100%;
-    border-top: 1px solid var(--line);
-    padding-top: 12px;
+    position: fixed;
+    top: 0;
+    right: 0;
+    z-index: 60;
+    display: grid;
+    align-content: start;
+    gap: 18px;
+    width: min(88vw, 370px);
+    height: 100dvh;
+    min-width: 0;
+    overflow-y: auto;
+    border-left: 1px solid var(--line);
+    background: var(--panel);
+    box-shadow: -20px 0 44px rgba(15, 23, 42, 0.16);
+    opacity: 0;
+    padding: 18px;
+    pointer-events: none;
+    transform: translateX(104%);
+    transition:
+      opacity 180ms ease,
+      transform 180ms ease,
+      visibility 180ms ease;
+    visibility: hidden;
   }
 
   .header-menu.open {
-    display: grid;
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateX(0);
+    visibility: visible;
+  }
+
+  .drawer-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
     gap: 12px;
+    border-bottom: 1px solid var(--line);
+    padding-bottom: 14px;
+  }
+
+  .drawer-head strong,
+  .drawer-head span {
+    display: block;
+  }
+
+  .drawer-head span {
+    color: var(--muted);
+    font-size: 0.82rem;
+    margin-top: 3px;
+  }
+
+  .drawer-close {
+    min-width: 38px;
+    padding-inline: 10px;
   }
 
   .nav-list {
+    align-items: stretch;
+    flex-direction: column;
     justify-content: start;
-    flex-wrap: wrap;
+  }
+
+  .nav-link {
+    padding: 10px 11px;
   }
 
   .session-card {
-    justify-content: space-between;
+    align-items: stretch;
+    flex-direction: column;
     width: 100%;
   }
 
@@ -1507,9 +1585,6 @@ button:disabled {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .chart-panel.wide {
-    grid-row: auto;
-  }
 }
 
 @media (max-width: 760px) {
@@ -1569,6 +1644,10 @@ button:disabled {
   .filter-grid,
   .search-row {
     grid-template-columns: 1fr;
+  }
+
+  .detail-column {
+    display: contents;
   }
 
   .response-action-head {

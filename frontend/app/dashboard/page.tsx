@@ -318,7 +318,7 @@ export default function DashboardPage() {
             </section>
 
             <section className="dashboard-chart-grid" aria-label="Dashboard incident charts">
-              <div className="panel chart-panel wide">
+              <div className="panel chart-panel chart-evolution">
                 <div className="section-head">
                   <h2>Alert/Event Evolution</h2>
                   <span>By last seen</span>
@@ -326,7 +326,25 @@ export default function DashboardPage() {
                 <VerticalBarChart data={chartData.eventEvolution} />
               </div>
 
-              <div className="panel chart-panel">
+              <div className="chart-side-stack">
+                <div className="panel chart-panel chart-donut-panel">
+                  <div className="section-head">
+                    <h2>Severity Distribution</h2>
+                    <span>Weighted events</span>
+                  </div>
+                  <DonutChart data={chartData.severity} />
+                </div>
+
+                <div className="panel chart-panel chart-donut-panel">
+                  <div className="section-head">
+                    <h2>Decision Distribution</h2>
+                    <span>Weighted events</span>
+                  </div>
+                  <DonutChart data={chartData.decisions} />
+                </div>
+              </div>
+
+              <div className="panel chart-panel chart-secondary">
                 <div className="section-head">
                   <h2>MITRE ATT&CK Distribution</h2>
                   <span>Top techniques</span>
@@ -334,28 +352,12 @@ export default function DashboardPage() {
                 <HorizontalBarList data={chartData.mitre} />
               </div>
 
-              <div className="panel chart-panel">
+              <div className="panel chart-panel chart-secondary">
                 <div className="section-head">
                   <h2>Top Agents</h2>
                   <span>By event volume</span>
                 </div>
                 <HorizontalBarList data={chartData.agents} />
-              </div>
-
-              <div className="panel chart-panel">
-                <div className="section-head">
-                  <h2>Severity Distribution</h2>
-                  <span>Weighted events</span>
-                </div>
-                <DonutChart data={chartData.severity} />
-              </div>
-
-              <div className="panel chart-panel">
-                <div className="section-head">
-                  <h2>Decision Distribution</h2>
-                  <span>Weighted events</span>
-                </div>
-                <DonutChart data={chartData.decisions} />
               </div>
             </section>
 
