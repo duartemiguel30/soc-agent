@@ -330,19 +330,46 @@ def extract_wazuh_observables(alert: dict) -> list[tuple[str, str]]:
         "agent_name": [("agent", "name")],
         "agent_id": [("agent", "id")],
         "src_ip": [
+            ("srcip",),
+            ("src_ip",),
+            ("source_ip",),
+            ("sourceIp",),
             ("data", "srcip"),
             ("data", "src_ip"),
+            ("data", "source_ip"),
+            ("data", "sourceIp"),
+            ("data", "win", "eventdata", "ipAddress"),
+            ("data", "win", "eventdata", "IpAddress"),
             ("data", "win", "eventdata", "sourceIp"),
             ("data", "win", "eventdata", "sourceIpAddress"),
+            ("data", "win", "eventdata", "sourceNetworkAddress"),
+            ("data", "win", "eventdata", "SourceNetworkAddress"),
         ],
-        "target_username": [("data", "win", "eventdata", "targetUserName")],
-        "subject_username": [("data", "win", "eventdata", "subjectUserName")],
+        "target_username": [
+            ("data", "win", "eventdata", "targetUserName"),
+            ("data", "win", "eventdata", "TargetUserName"),
+        ],
+        "subject_username": [
+            ("data", "win", "eventdata", "subjectUserName"),
+            ("data", "win", "eventdata", "SubjectUserName"),
+        ],
         "user": [("data", "win", "eventdata", "user")],
+        "source_workstation": [
+            ("data", "win", "eventdata", "workstationName"),
+            ("data", "win", "eventdata", "WorkstationName"),
+        ],
+        "source_port": [
+            ("data", "win", "eventdata", "ipPort"),
+            ("data", "win", "eventdata", "IpPort"),
+        ],
         "process_name": [("data", "win", "eventdata", "image")],
         "parent_process_name": [("data", "win", "eventdata", "parentImage")],
         "command_line": [("data", "win", "eventdata", "commandLine")],
         "target_image": [("data", "win", "eventdata", "targetImage")],
-        "host": [("data", "win", "system", "computer")],
+        "host": [
+            ("data", "win", "system", "computer"),
+            ("data", "win", "system", "Computer"),
+        ],
     }
     observables: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
@@ -406,6 +433,8 @@ def wazuh_alert_context(alert: dict) -> dict:
         "host": observables.get("host"),
         "src_ip": observables.get("src_ip"),
         "target_username": target_username,
+        "source_workstation": observables.get("source_workstation"),
+        "source_port": observables.get("source_port"),
         "process_name": observables.get("process_name"),
         "target_image": observables.get("target_image"),
         "mitre_technique": clean_observable_value(techniques[0] if techniques else None),
@@ -429,6 +458,8 @@ def build_alert_summary(
         parts.append(f"src_ip={observables['src_ip']}")
     if target_username:
         parts.append(f"user={target_username}")
+    if observables.get("source_workstation"):
+        parts.append(f"workstation={observables['source_workstation']}")
     if observables.get("process_name") or observables.get("target_image"):
         parts.append(f"process={observables.get('target_image') or observables.get('process_name')}")
     return " | ".join(parts)[:500]
@@ -456,20 +487,31 @@ def build_alert_hash(alert: dict) -> str:
 def build_correlation_key(context: dict) -> str:
     rule_id = normalize_correlation_value(context.get("rule_id")) or "unknown_rule"
     agent_name = normalize_correlation_value(context.get("agent_name") or context.get("host"))
+    host = normalize_correlation_value(context.get("host"))
     src_ip = normalize_correlation_value(context.get("src_ip"))
     target_username = normalize_correlation_value(context.get("target_username"))
+    source_workstation = normalize_correlation_value(context.get("source_workstation"))
     process_name = normalize_correlation_value(context.get("target_image") or context.get("process_name"))
     mitre_technique = normalize_correlation_value(context.get("mitre_technique"))
 
     if rule_id == "100004":
+        host_or_agent = host or agent_name
         if src_ip and target_username:
-            parts = ("rule", rule_id, "src", src_ip, "user", target_username)
+            parts = ["rule", rule_id, "src", src_ip, "user", target_username]
+            if source_workstation:
+                parts.extend(["workstation", source_workstation])
+            if host_or_agent:
+                parts.extend(["host", host_or_agent])
         elif src_ip:
-            parts = ("rule", rule_id, "src", src_ip)
+            parts = ["rule", rule_id, "src", src_ip]
+            if source_workstation:
+                parts.extend(["workstation", source_workstation])
+            if host_or_agent:
+                parts.extend(["host", host_or_agent])
         elif agent_name:
-            parts = ("rule", rule_id, "agent", agent_name)
+            parts = ["rule", rule_id, "agent", agent_name]
         else:
-            parts = ("rule", rule_id)
+            parts = ["rule", rule_id]
         return "|".join(parts)
 
     if process_name and ("lsass" in process_name or mitre_technique):
@@ -660,6 +702,18 @@ async def receive_alert(alert: dict, db: Session = Depends(get_db)):
         context = wazuh_alert_context(alert)
         alert_hash = build_alert_hash(alert)
         correlation_key = build_correlation_key(context)
+        if context.get("rule_id") == "100004":
+            logger.info(
+                "Rule 100004 correlation fields: rule_id=%s agent_name=%s host=%s src_ip=%s "
+                "target_username=%s source_workstation=%s correlation_key=%s",
+                context.get("rule_id"),
+                context.get("agent_name"),
+                context.get("host"),
+                context.get("src_ip"),
+                context.get("target_username"),
+                context.get("source_workstation"),
+                correlation_key,
+            )
 
         duplicate_event = db.query(IncidentAlertEvent).filter(IncidentAlertEvent.alert_hash == alert_hash).first()
         if duplicate_event:

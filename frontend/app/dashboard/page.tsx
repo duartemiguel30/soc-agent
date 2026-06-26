@@ -7,6 +7,7 @@ import { AuthGuard } from "@/app/components/AuthGuard";
 import { Incident, listArchivedIncidents, listIncidents } from "@/lib/api";
 import {
   getSeverity,
+  incidentEventCount,
   isCriticalDecisionIncident,
   isPendingIncident,
   isProcessedIncident,
@@ -14,8 +15,185 @@ import {
   normalizeValue,
 } from "@/lib/incidents";
 
+type ChartDatum = {
+  label: string;
+  value: number;
+  color?: string;
+};
+
+const chartColors = ["#2f80ed", "#10b981", "#f97316", "#8b5cf6", "#64748b", "#ef4444"];
+
+const severityColors: Record<string, string> = {
+  critical: "#ef4444",
+  high: "#f97316",
+  medium: "#d97706",
+  low: "#10b981",
+  unknown: "#94a3b8",
+};
+
+function incidentVolume(incident: Incident) {
+  return incidentEventCount(incident);
+}
+
+function incidentTimeValue(incident: Incident) {
+  const value = incident.last_seen || incident.created_at || incident.first_seen;
+  const time = new Date(value || "").getTime();
+  return Number.isNaN(time) ? 0 : time;
+}
+
+function addToDistribution(map: Map<string, number>, label: string, value: number) {
+  const key = label.trim() || "Unknown";
+  map.set(key, (map.get(key) || 0) + value);
+}
+
+function topDistribution(
+  incidents: Incident[],
+  getLabel: (incident: Incident) => string | null | undefined,
+  limit = 6,
+) {
+  const map = new Map<string, number>();
+  incidents.forEach((incident) => addToDistribution(map, getLabel(incident) || "Unknown", incidentVolume(incident)));
+  return Array.from(map.entries())
+    .map(([label, value], index) => ({ label: labelValue(label), value, color: chartColors[index % chartColors.length] }))
+    .sort((a, b) => b.value - a.value)
+    .slice(0, limit);
+}
+
+function timeBuckets(incidents: Incident[]): ChartDatum[] {
+  const dated = incidents
+    .map((incident) => ({ incident, time: incidentTimeValue(incident) }))
+    .filter((item) => item.time > 0)
+    .sort((a, b) => a.time - b.time);
+
+  if (!dated.length) {
+    return [];
+  }
+
+  const first = dated[0].time;
+  const last = dated[dated.length - 1].time;
+  const useHours = last - first <= 48 * 60 * 60 * 1000;
+  const formatter = new Intl.DateTimeFormat(undefined, useHours ? { hour: "2-digit", day: "2-digit" } : { month: "short", day: "2-digit" });
+  const map = new Map<string, number>();
+
+  dated.forEach(({ incident, time }) => {
+    const date = new Date(time);
+    const bucket = useHours
+      ? new Date(date.getFullYear(), date.getMonth(), date.getDate(), date.getHours())
+      : new Date(date.getFullYear(), date.getMonth(), date.getDate());
+    addToDistribution(map, formatter.format(bucket), incidentVolume(incident));
+  });
+
+  return Array.from(map.entries()).map(([label, value]) => ({ label, value, color: "#2f80ed" }));
+}
+
+function EmptyChart() {
+  return <div className="chart-empty">No incident data available.</div>;
+}
+
+function VerticalBarChart({ data }: { data: ChartDatum[] }) {
+  const max = Math.max(...data.map((item) => item.value), 1);
+  if (!data.length) {
+    return <EmptyChart />;
+  }
+
+  return (
+    <div className="bar-chart" role="list">
+      {data.map((item) => (
+        <div className="bar-column" key={item.label} role="listitem">
+          <div className="bar-track" aria-label={`${item.label}: ${item.value}`}>
+            <span
+              className="bar-fill"
+              style={{ height: `${Math.max(8, (item.value / max) * 100)}%`, background: item.color || "#2f80ed" }}
+            />
+          </div>
+          <strong>{item.value}</strong>
+          <span>{item.label}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function HorizontalBarList({ data }: { data: ChartDatum[] }) {
+  const max = Math.max(...data.map((item) => item.value), 1);
+  if (!data.length) {
+    return <EmptyChart />;
+  }
+
+  return (
+    <div className="horizontal-chart">
+      {data.map((item) => (
+        <div className="horizontal-row" key={item.label}>
+          <div className="horizontal-label">
+            <span>{item.label}</span>
+            <strong>{item.value}</strong>
+          </div>
+          <div className="horizontal-track">
+            <span
+              className="horizontal-fill"
+              style={{ width: `${Math.max(4, (item.value / max) * 100)}%`, background: item.color || "#2f80ed" }}
+            />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DonutChart({ data }: { data: ChartDatum[] }) {
+  const total = data.reduce((sum, item) => sum + item.value, 0);
+  const circumference = 2 * Math.PI * 38;
+
+  if (!total) {
+    return <EmptyChart />;
+  }
+
+  const segments = data.map((item, index) => {
+    const length = (item.value / total) * circumference;
+    const offset = data
+      .slice(0, index)
+      .reduce((sum, previous) => sum + (previous.value / total) * circumference, 0);
+    return { ...item, length, offset };
+  });
+
+  return (
+    <div className="donut-chart">
+      <svg viewBox="0 0 96 96" aria-label="Distribution chart">
+        <circle className="donut-base" cx="48" cy="48" r="38" />
+        {segments.map((item, index) => (
+          <circle
+            className="donut-segment"
+            cx="48"
+            cy="48"
+            key={item.label}
+            r="38"
+            stroke={item.color || chartColors[index % chartColors.length]}
+            strokeDasharray={`${item.length} ${circumference - item.length}`}
+            strokeDashoffset={-item.offset}
+          />
+        ))}
+        <text x="48" y="45" textAnchor="middle">
+          {total}
+        </text>
+        <text className="donut-caption" x="48" y="58" textAnchor="middle">
+          events
+        </text>
+      </svg>
+      <div className="chart-legend">
+        {data.map((item, index) => (
+          <span key={item.label}>
+            <i style={{ background: item.color || chartColors[index % chartColors.length] }} />
+            {item.label} ({item.value})
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function DashboardPage() {
   const [incidents, setIncidents] = useState<Incident[]>([]);
+  const [allIncidents, setAllIncidents] = useState<Incident[]>([]);
   const [archivedCount, setArchivedCount] = useState(0);
   const [storedCount, setStoredCount] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -31,6 +209,7 @@ export default function DashboardPage() {
         listArchivedIncidents(),
       ]);
       setIncidents(activeIncidents);
+      setAllIncidents(allIncidents);
       setStoredCount(allIncidents.length);
       setArchivedCount(archivedIncidents.length);
       setLastUpdated(new Date().toLocaleTimeString());
@@ -65,11 +244,27 @@ export default function DashboardPage() {
 
   const severityDistribution = useMemo(() => {
     const distribution = { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 };
-    incidents.forEach((incident) => {
-      distribution[getSeverity(incident)] += 1;
+    allIncidents.forEach((incident) => {
+      distribution[getSeverity(incident)] += incidentVolume(incident);
     });
     return distribution;
-  }, [incidents]);
+  }, [allIncidents]);
+
+  const chartData = useMemo(() => {
+    const severity = Object.entries(severityDistribution).map(([label, value]) => ({
+      label: labelValue(label),
+      value,
+      color: severityColors[label],
+    }));
+    const decisions = topDistribution(allIncidents, (incident) => incident.decision || "Unknown");
+    return {
+      eventEvolution: timeBuckets(allIncidents),
+      mitre: topDistribution(allIncidents, (incident) => incident.mitre_technique || "Unknown"),
+      agents: topDistribution(allIncidents, (incident) => incident.agent_name || "Unknown"),
+      severity,
+      decisions,
+    };
+  }, [allIncidents, severityDistribution]);
 
   return (
     <AuthGuard>
@@ -122,10 +317,52 @@ export default function DashboardPage() {
               </div>
             </section>
 
+            <section className="dashboard-chart-grid" aria-label="Dashboard incident charts">
+              <div className="panel chart-panel wide">
+                <div className="section-head">
+                  <h2>Alert/Event Evolution</h2>
+                  <span>By last seen</span>
+                </div>
+                <VerticalBarChart data={chartData.eventEvolution} />
+              </div>
+
+              <div className="panel chart-panel">
+                <div className="section-head">
+                  <h2>MITRE ATT&CK Distribution</h2>
+                  <span>Top techniques</span>
+                </div>
+                <HorizontalBarList data={chartData.mitre} />
+              </div>
+
+              <div className="panel chart-panel">
+                <div className="section-head">
+                  <h2>Top Agents</h2>
+                  <span>By event volume</span>
+                </div>
+                <HorizontalBarList data={chartData.agents} />
+              </div>
+
+              <div className="panel chart-panel">
+                <div className="section-head">
+                  <h2>Severity Distribution</h2>
+                  <span>Weighted events</span>
+                </div>
+                <DonutChart data={chartData.severity} />
+              </div>
+
+              <div className="panel chart-panel">
+                <div className="section-head">
+                  <h2>Decision Distribution</h2>
+                  <span>Weighted events</span>
+                </div>
+                <DonutChart data={chartData.decisions} />
+              </div>
+            </section>
+
             <section className="panel severity-strip-panel">
               <div className="section-head">
-                <h2>Active Severity Distribution</h2>
-                <span>{incidents.length} active</span>
+                <h2>Stored Severity Summary</h2>
+                <span>{storedCount} stored</span>
               </div>
               <div className="metric-grid compact-metrics">
                 {Object.entries(severityDistribution).map(([severity, count]) => (

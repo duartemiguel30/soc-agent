@@ -394,7 +394,7 @@ export default function IncidentDetailPage() {
             ) : (
               <div className="detail-grid">
                 <div className="detail-stack">
-                  <section className="panel">
+                  <section className="panel detail-overview-card">
                     <div className="section-head">
                       <h2>Incident Overview</h2>
                       <div className="badge-row">
@@ -449,7 +449,7 @@ export default function IncidentDetailPage() {
                     ) : null}
                   </section>
 
-                  <section className="panel">
+                  <section className="panel detail-alert-card">
                     <div className="section-head">
                       <h2>Alert Activity</h2>
                       <span>{incidentEventCount(incident)}</span>
@@ -479,7 +479,7 @@ export default function IncidentDetailPage() {
                     </div>
                   </section>
 
-                  <section className="panel">
+                  <section className="panel detail-ai-card">
                     <div className="section-head">
                       <h2>AI Analysis</h2>
                       <span>{typeof incident.confidence === "number" ? `${incident.confidence}% confidence` : "N/A"}</span>
@@ -499,7 +499,7 @@ export default function IncidentDetailPage() {
                     </div>
                   </section>
 
-                  <section className="panel">
+                  <section className="panel detail-observables-card">
                     <div className="section-head">
                       <h2>Observables</h2>
                       <span>{observables.length}</span>
@@ -522,7 +522,7 @@ export default function IncidentDetailPage() {
                     </div>
                   </section>
 
-                  <section className="panel">
+                  <section className="panel detail-response-card">
                     <div className="section-head">
                       <h2>Response Actions</h2>
                       <span>{responseActions.length}</span>
@@ -569,7 +569,7 @@ export default function IncidentDetailPage() {
                     </div>
                   </section>
 
-                  <section className="panel">
+                  <section className="panel detail-notes-card">
                     <div className="section-head">
                       <h2>Analyst Notes</h2>
                       <span>{notes.length}</span>
@@ -605,7 +605,7 @@ export default function IncidentDetailPage() {
                 </div>
 
                 <div className="detail-stack">
-                  <section className="panel">
+                  <section className="panel detail-playbook-card">
                     <div className="section-head">
                       <div>
                         <h2>{playbook?.title || "Manual Playbook"}</h2>
@@ -675,7 +675,7 @@ export default function IncidentDetailPage() {
                     </div>
                   </section>
 
-                  <section className="panel">
+                  <section className="panel detail-timeline-card">
                     <div className="section-head">
                       <h2>Timeline</h2>
                       <span>{timeline.length}</span>
@@ -701,7 +701,7 @@ export default function IncidentDetailPage() {
                     </div>
                   </section>
 
-                  <section className="panel">
+                  <section className="panel detail-history-card">
                     <div className="section-head">
                       <h2>Action History</h2>
                       <span>{actions.length}</span>

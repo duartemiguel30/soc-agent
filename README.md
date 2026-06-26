@@ -11,6 +11,8 @@ The backend is FastAPI with SQLite persistence. The primary admin UI is the Next
 - SQLite-backed incidents, correlated alert events, admin users, admin sessions, notes, archive state, manual playbooks, action history, and observables.
 - Admin authentication with opaque HttpOnly session cookies.
 - Next.js admin console for dashboard, incidents, archive, incident detail, notes, playbooks, response actions, and report generation.
+- Clean light admin-console UI theme with centralized CSS variables for quick browser tuning.
+- Frontend-derived dashboard charts for event evolution, MITRE distribution, top agents, severity, and decisions.
 - Additive incident observables extracted from Wazuh/Sysmon payloads.
 - Alert correlation/deduplication groups repeated Wazuh alerts into one incident with event count, first seen, and last seen metadata.
 - Analyst-controlled response actions:
@@ -138,11 +140,15 @@ Current extracted keys include:
 - `target_username`
 - `subject_username`
 - `user`
+- `source_workstation`
+- `source_port`
 - `process_name`
 - `parent_process_name`
 - `command_line`
 - `target_image`
 - `host`
+
+Windows failed-logon/brute-force alerts extract source fields directly from raw Wazuh payload paths such as `data.win.eventdata.ipAddress`, `data.win.eventdata.targetUserName`, and `data.win.eventdata.workstationName`. These raw observables drive correlation, alert activity metadata, and response-action availability; Gemini reasoning text is not trusted as a source for executable observables.
 
 Extraction is defensive: missing fields are ignored, empty values are not stored, and exact duplicates are prevented with unique `(incident_id, key, value)`. Older incidents may have no observables.
 
@@ -293,12 +299,16 @@ Open:
 http://192.168.56.105:3000
 ```
 
+The default UI uses a clean light admin-console theme. Theme colors are centralized in `frontend/app/globals.css` under `:root`; the fastest presentation-prep variables to adjust are `--bg`, `--panel`, `--line`, `--text`, `--muted`, `--accent`, `--accent-strong`, and the severity variables.
+
+Dashboard charts are computed in the frontend from existing incident API responses. They use fields such as `severity`, `decision`, `mitre_technique`, `agent_name`, `event_count`, `first_seen`, `last_seen`, and `created_at`. No heavy chart dependency is used; charts are plain React, CSS, and SVG.
+
 Current UI pages:
 
-- `/dashboard`: operational metrics and navigation shortcuts.
+- `/dashboard`: operational metrics, event/alert evolution, MITRE distribution, top agents, severity distribution, decision distribution, and navigation shortcuts.
 - `/incidents`: active incident triage, filtering, approve/reject, archive, and detail links.
 - `/archive`: archived incident search, filtering, event aggregation metadata, and unarchive.
-- `/incidents/{id}`: read-only incident fields plus alert activity, observables, response actions, manual playbook, notes, timeline, and action history.
+- `/incidents/{id}`: read-only incident fields plus alert activity, observables, response actions, manual playbook, notes, timeline, and action history in a responsive two-column desktop layout.
 - `/report`: global executive report generated from stored incidents.
 
 The frontend uses FastAPI's HttpOnly cookie through `/backend/*`. It does not store auth tokens in `localStorage` or `sessionStorage`.
