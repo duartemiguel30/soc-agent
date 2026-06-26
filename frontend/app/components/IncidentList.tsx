@@ -106,6 +106,7 @@ export function IncidentList({
                   {labelValue(incident.severity)}
                 </span>
                 <span className="badge">{labelValue(incident.status || "no status")}</span>
+                <span className="badge">{labelValue(incident.decision || "no decision")}</span>
               </div>
             </div>
 
@@ -155,6 +156,11 @@ export function IncidentList({
 
             {pending ? (
               <div className="action-row">
+                {linkToDetail ? (
+                  <Link className="button secondary" href={`/incidents/${incident.id}`}>
+                    Open detail
+                  </Link>
+                ) : null}
                 <button
                   className="button primary"
                   onClick={() => runAction(incident.id, "approve")}
@@ -172,15 +178,22 @@ export function IncidentList({
               </div>
             ) : null}
 
-            {canArchive || incident.is_archived ? (
+            {!pending && (linkToDetail || canArchive || incident.is_archived) ? (
               <div className="action-row">
-                <button
-                  className="button secondary"
-                  onClick={() => runArchiveAction(incident.id, incident.is_archived)}
-                  disabled={busyId === incident.id}
-                >
-                  {incident.is_archived ? "Unarchive" : "Archive"}
-                </button>
+                {linkToDetail ? (
+                  <Link className="button secondary" href={`/incidents/${incident.id}`}>
+                    Open detail
+                  </Link>
+                ) : null}
+                {canArchive || incident.is_archived ? (
+                  <button
+                    className="button secondary"
+                    onClick={() => runArchiveAction(incident.id, incident.is_archived)}
+                    disabled={busyId === incident.id}
+                  >
+                    {incident.is_archived ? "Unarchive" : "Archive"}
+                  </button>
+                ) : null}
               </div>
             ) : null}
           </article>

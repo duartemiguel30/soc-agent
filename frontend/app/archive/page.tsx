@@ -94,6 +94,7 @@ export default function ArchivePage() {
   const [decisionFilter, setDecisionFilter] = useState<DecisionFilter>("all");
   const [archivedByFilter, setArchivedByFilter] = useState("all");
   const [sortKey, setSortKey] = useState<SortKey>("archived_newest");
+  const [filtersOpen, setFiltersOpen] = useState(true);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -263,181 +264,192 @@ export default function ArchivePage() {
               </div>
             </section>
 
-            <section className="controls-panel sticky-controls" aria-label="Archive controls">
-              <div className="search-row">
-                <label className="field search-field">
-                  Search archive
-                  <input
-                    value={search}
-                    onChange={(event) => setSearch(event.target.value)}
-                    placeholder="Rule, agent, MITRE, classification, archived by, reason"
-                  />
-                </label>
-              </div>
+            <div className="workbench-layout">
+              <details
+                className="filter-panel sticky-controls"
+                open={filtersOpen}
+                onToggle={(event) => setFiltersOpen(event.currentTarget.open)}
+              >
+                <summary>Search and filters</summary>
+                <div className="filter-panel-body">
+                  <div className="search-row">
+                    <label className="field search-field">
+                      Search archive
+                      <input
+                        value={search}
+                        onChange={(event) => setSearch(event.target.value)}
+                        placeholder="Rule, agent, MITRE, classification, archived by, reason"
+                      />
+                    </label>
+                  </div>
 
-              <div className="filter-grid archive-filter-grid">
-                <label className="field">
-                  Original status
-                  <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as StatusFilter)}>
-                    {statusOptions.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="field">
-                  Severity
-                  <select
-                    value={severityFilter}
-                    onChange={(event) => setSeverityFilter(event.target.value as SeverityFilter)}
-                  >
-                    {severityOptions.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="field">
-                  Classification
-                  <select
-                    value={classificationFilter}
-                    onChange={(event) => setClassificationFilter(event.target.value as ClassificationFilter)}
-                  >
-                    {classificationOptions.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="field">
-                  Decision
-                  <select
-                    value={decisionFilter}
-                    onChange={(event) => setDecisionFilter(event.target.value as DecisionFilter)}
-                  >
-                    {decisionOptions.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="field">
-                  Archived by
-                  <select value={archivedByFilter} onChange={(event) => setArchivedByFilter(event.target.value)}>
-                    <option value="all">All analysts</option>
-                    {archivedByOptions.map((actor) => (
-                      <option key={actor} value={actor}>
-                        {actor}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="field">
-                  Sort
-                  <select value={sortKey} onChange={(event) => setSortKey(event.target.value as SortKey)}>
-                    {sortOptions.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-
-              <div className="result-row">
-                <span>
-                  Showing {filteredIncidents.length} of {incidents.length} archived incidents
-                </span>
-                <button className="button ghost" onClick={clearFilters} type="button">
-                  Clear filters
-                </button>
-              </div>
-            </section>
-
-            {notice ? <div className="alert success">{notice}</div> : null}
-            {error ? <div className="alert error">{error}</div> : null}
-
-            {loading ? (
-              <div className="loading-panel">Loading archived incidents...</div>
-            ) : filteredIncidents.length ? (
-              <div className="incident-list">
-                {filteredIncidents.map((incident) => (
-                  <article className="incident-card" key={incident.id}>
-                    <div className="incident-head">
-                      <div className="incident-title-block">
-                        <span className="mono">#{shortIncidentId(incident.id)}</span>
-                        <h3>
-                          <Link href={`/incidents/${incident.id}`}>
-                            {incident.rule_description || `Rule ${incident.rule_id || "unknown"}`}
-                          </Link>
-                        </h3>
-                      </div>
-                      <div className="badge-row">
-                        <span className={`badge severity-${getSeverity(incident)}`}>
-                          {labelValue(incident.severity)}
-                        </span>
-                        <span className="badge">{labelValue(incident.status)}</span>
-                        <span className="badge">{labelValue(incident.decision)}</span>
-                      </div>
-                    </div>
-
-                    <div className="incident-grid">
-                      <span>
-                        <strong>Classification</strong>
-                        {labelValue(incident.classification)}
-                      </span>
-                      <span>
-                        <strong>Archived at</strong>
-                        {formatIncidentDate(incident.archive_state?.archived_at)}
-                      </span>
-                      <span>
-                        <strong>Archived by</strong>
-                        {incident.archive_state?.archived_by || "unknown"}
-                      </span>
-                      <span>
-                        <strong>Created</strong>
-                        {formatIncidentDate(incident.created_at)}
-                      </span>
-                      <span>
-                        <strong>Rule level</strong>
-                        {incident.rule_level ?? "N/A"}
-                      </span>
-                      <span>
-                        <strong>Confidence</strong>
-                        {typeof incident.confidence === "number" ? `${incident.confidence}%` : "N/A"}
-                      </span>
-                    </div>
-
-                    {incident.archive_state?.reason ? (
-                      <div className="incident-detail">
-                        <p>
-                          <strong>Reason:</strong> {incident.archive_state.reason}
-                        </p>
-                      </div>
-                    ) : null}
-
-                    <div className="action-row">
-                      <Link className="button secondary" href={`/incidents/${incident.id}`}>
-                        Open detail
-                      </Link>
-                      <button
-                        className="button secondary"
-                        onClick={() => handleUnarchive(incident.id)}
-                        disabled={busyId === incident.id}
+                  <div className="filter-grid archive-filter-grid">
+                    <label className="field">
+                      Original status
+                      <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as StatusFilter)}>
+                        {statusOptions.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="field">
+                      Severity
+                      <select
+                        value={severityFilter}
+                        onChange={(event) => setSeverityFilter(event.target.value as SeverityFilter)}
                       >
-                        {busyId === incident.id ? "Restoring..." : "Unarchive"}
-                      </button>
-                    </div>
-                  </article>
-                ))}
-              </div>
-            ) : (
-              <div className="empty-state">No archived incidents match the current filters.</div>
-            )}
+                        {severityOptions.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="field">
+                      Classification
+                      <select
+                        value={classificationFilter}
+                        onChange={(event) => setClassificationFilter(event.target.value as ClassificationFilter)}
+                      >
+                        {classificationOptions.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="field">
+                      Decision
+                      <select
+                        value={decisionFilter}
+                        onChange={(event) => setDecisionFilter(event.target.value as DecisionFilter)}
+                      >
+                        {decisionOptions.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="field">
+                      Archived by
+                      <select value={archivedByFilter} onChange={(event) => setArchivedByFilter(event.target.value)}>
+                        <option value="all">All analysts</option>
+                        {archivedByOptions.map((actor) => (
+                          <option key={actor} value={actor}>
+                            {actor}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="field">
+                      Sort
+                      <select value={sortKey} onChange={(event) => setSortKey(event.target.value as SortKey)}>
+                        {sortOptions.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+
+                  <div className="result-row">
+                    <span>
+                      Showing {filteredIncidents.length} of {incidents.length} archived incidents
+                    </span>
+                    <button className="button ghost" onClick={clearFilters} type="button">
+                      Clear filters
+                    </button>
+                  </div>
+                </div>
+              </details>
+
+              <section className="results-panel" aria-label="Archived incident results">
+                {notice ? <div className="alert success">{notice}</div> : null}
+                {error ? <div className="alert error">{error}</div> : null}
+
+                {loading ? (
+                  <div className="loading-panel">Loading archived incidents...</div>
+                ) : filteredIncidents.length ? (
+                  <div className="incident-list">
+                    {filteredIncidents.map((incident) => (
+                      <article className="incident-card" key={incident.id}>
+                        <div className="incident-head">
+                          <div className="incident-title-block">
+                            <span className="mono">#{shortIncidentId(incident.id)}</span>
+                            <h3>
+                              <Link href={`/incidents/${incident.id}`}>
+                                {incident.rule_description || `Rule ${incident.rule_id || "unknown"}`}
+                              </Link>
+                            </h3>
+                          </div>
+                          <div className="badge-row">
+                            <span className={`badge severity-${getSeverity(incident)}`}>
+                              {labelValue(incident.severity)}
+                            </span>
+                            <span className="badge">{labelValue(incident.status)}</span>
+                            <span className="badge">{labelValue(incident.decision)}</span>
+                          </div>
+                        </div>
+
+                        <div className="incident-grid">
+                          <span>
+                            <strong>Classification</strong>
+                            {labelValue(incident.classification)}
+                          </span>
+                          <span>
+                            <strong>Archived at</strong>
+                            {formatIncidentDate(incident.archive_state?.archived_at)}
+                          </span>
+                          <span>
+                            <strong>Archived by</strong>
+                            {incident.archive_state?.archived_by || "unknown"}
+                          </span>
+                          <span>
+                            <strong>Created</strong>
+                            {formatIncidentDate(incident.created_at)}
+                          </span>
+                          <span>
+                            <strong>Rule level</strong>
+                            {incident.rule_level ?? "N/A"}
+                          </span>
+                          <span>
+                            <strong>Confidence</strong>
+                            {typeof incident.confidence === "number" ? `${incident.confidence}%` : "N/A"}
+                          </span>
+                        </div>
+
+                        {incident.archive_state?.reason ? (
+                          <div className="incident-detail">
+                            <p>
+                              <strong>Reason:</strong> {incident.archive_state.reason}
+                            </p>
+                          </div>
+                        ) : null}
+
+                        <div className="action-row">
+                          <Link className="button secondary" href={`/incidents/${incident.id}`}>
+                            Open detail
+                          </Link>
+                          <button
+                            className="button secondary"
+                            onClick={() => handleUnarchive(incident.id)}
+                            disabled={busyId === incident.id}
+                          >
+                            {busyId === incident.id ? "Restoring..." : "Unarchive"}
+                          </button>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="empty-state">No archived incidents match the current filters.</div>
+                )}
+              </section>
+            </div>
           </main>
         </AppShell>
       )}

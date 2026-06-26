@@ -87,6 +87,7 @@ export default function IncidentsPage() {
   const [levelFilter, setLevelFilter] = useState<LevelFilter>("all");
   const [sortKey, setSortKey] = useState<SortKey>("newest");
   const [compact, setCompact] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ type: "success" | "error"; message: string } | null>(null);
@@ -188,7 +189,6 @@ export default function IncidentsPage() {
     return {
       active: incidents.length,
       pending: incidents.filter(isPendingIncident).length,
-      criticalSeverity: incidents.filter((incident) => getSeverity(incident) === "critical").length,
       criticalDecision: incidents.filter(isCriticalDecisionIncident).length,
       severityDistribution,
     };
@@ -231,10 +231,6 @@ export default function IncidentsPage() {
                 <strong>{summary.pending}</strong>
               </div>
               <div className="metric-card compact">
-                <span>Critical severity</span>
-                <strong>{summary.criticalSeverity}</strong>
-              </div>
-              <div className="metric-card compact">
                 <span>Critical alert decisions</span>
                 <strong>{summary.criticalDecision}</strong>
               </div>
@@ -249,122 +245,133 @@ export default function IncidentsPage() {
               ))}
             </section>
 
-            <section className="controls-panel sticky-controls" aria-label="Incident controls">
-              <div className="search-row">
-                <label className="field search-field">
-                  Search incidents
-                  <input
-                    value={search}
-                    onChange={(event) => setSearch(event.target.value)}
-                    placeholder="Rule, agent, MITRE, classification, reasoning, action"
+            <div className="workbench-layout">
+              <details
+                className="filter-panel sticky-controls"
+                open={filtersOpen}
+                onToggle={(event) => setFiltersOpen(event.currentTarget.open)}
+              >
+                <summary>Search and filters</summary>
+                <div className="filter-panel-body">
+                  <div className="search-row">
+                    <label className="field search-field">
+                      Search incidents
+                      <input
+                        value={search}
+                        onChange={(event) => setSearch(event.target.value)}
+                        placeholder="Rule, agent, MITRE, classification, reasoning, action"
+                      />
+                    </label>
+                    <label className="toggle-row">
+                      <input
+                        checked={compact}
+                        onChange={(event) => setCompact(event.target.checked)}
+                        type="checkbox"
+                      />
+                      Compact cards
+                    </label>
+                  </div>
+
+                  <div className="filter-grid">
+                    <label className="field">
+                      Status
+                      <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as StatusFilter)}>
+                        {statusOptions.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="field">
+                      Severity
+                      <select
+                        value={severityFilter}
+                        onChange={(event) => setSeverityFilter(event.target.value as SeverityFilter)}
+                      >
+                        {severityOptions.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="field">
+                      Classification
+                      <select
+                        value={classificationFilter}
+                        onChange={(event) => setClassificationFilter(event.target.value as ClassificationFilter)}
+                      >
+                        {classificationOptions.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="field">
+                      Decision
+                      <select
+                        value={decisionFilter}
+                        onChange={(event) => setDecisionFilter(event.target.value as DecisionFilter)}
+                      >
+                        {decisionOptions.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="field">
+                      Rule level
+                      <select value={levelFilter} onChange={(event) => setLevelFilter(event.target.value as LevelFilter)}>
+                        {levelOptions.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="field">
+                      Sort
+                      <select value={sortKey} onChange={(event) => setSortKey(event.target.value as SortKey)}>
+                        {sortOptions.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+
+                  <div className="result-row">
+                    <span>
+                      Showing {filteredIncidents.length} of {incidents.length} incidents
+                    </span>
+                    <button className="button ghost" onClick={clearFilters} type="button">
+                      Clear filters
+                    </button>
+                  </div>
+                </div>
+              </details>
+
+              <section className="results-panel" aria-label="Incident results">
+                {notice ? <div className={`alert ${notice.type}`}>{notice.message}</div> : null}
+                {error ? <div className="alert error">{error}</div> : null}
+
+                {loading ? (
+                  <div className="loading-panel">Loading incidents...</div>
+                ) : (
+                  <IncidentList
+                    compact={compact}
+                    detailed={!compact}
+                    incidents={filteredIncidents}
+                    onActionResult={(message, type) => setNotice({ message, type })}
+                    onChanged={refresh}
                   />
-                </label>
-                <label className="toggle-row">
-                  <input
-                    checked={compact}
-                    onChange={(event) => setCompact(event.target.checked)}
-                    type="checkbox"
-                  />
-                  Compact cards
-                </label>
-              </div>
-
-              <div className="filter-grid">
-                <label className="field">
-                  Status
-                  <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as StatusFilter)}>
-                    {statusOptions.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="field">
-                  Severity
-                  <select
-                    value={severityFilter}
-                    onChange={(event) => setSeverityFilter(event.target.value as SeverityFilter)}
-                  >
-                    {severityOptions.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="field">
-                  Classification
-                  <select
-                    value={classificationFilter}
-                    onChange={(event) => setClassificationFilter(event.target.value as ClassificationFilter)}
-                  >
-                    {classificationOptions.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="field">
-                  Decision
-                  <select
-                    value={decisionFilter}
-                    onChange={(event) => setDecisionFilter(event.target.value as DecisionFilter)}
-                  >
-                    {decisionOptions.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="field">
-                  Rule level
-                  <select value={levelFilter} onChange={(event) => setLevelFilter(event.target.value as LevelFilter)}>
-                    {levelOptions.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="field">
-                  Sort
-                  <select value={sortKey} onChange={(event) => setSortKey(event.target.value as SortKey)}>
-                    {sortOptions.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-
-              <div className="result-row">
-                <span>
-                  Showing {filteredIncidents.length} of {incidents.length} incidents
-                </span>
-                <button className="button ghost" onClick={clearFilters} type="button">
-                  Clear filters
-                </button>
-              </div>
-            </section>
-
-            {notice ? <div className={`alert ${notice.type}`}>{notice.message}</div> : null}
-            {error ? <div className="alert error">{error}</div> : null}
-
-            {loading ? (
-              <div className="loading-panel">Loading incidents...</div>
-            ) : (
-              <IncidentList
-                compact={compact}
-                detailed={!compact}
-                incidents={filteredIncidents}
-                onActionResult={(message, type) => setNotice({ message, type })}
-                onChanged={refresh}
-              />
-            )}
+                )}
+              </section>
+            </div>
           </main>
         </AppShell>
       )}

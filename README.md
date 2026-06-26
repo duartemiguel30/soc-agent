@@ -152,11 +152,14 @@ npm run dev -- --host 0.0.0.0
 
 The current Next.js UI uses:
 
+- top header navigation for Dashboard, Incidents, Archive, Report, signed-in user context, and logout.
 - `/dashboard` as a metrics-only operations console with active, archived, stored, severity, and decision counts plus navigation shortcuts.
-- `/incidents` for active incident triage with metric cards, severity distribution, search, filters, sorting, approve/reject, archive, and detail links.
-- `/archive` for archived incidents with archive metrics, search, filters, sorting, unarchive, and detail links.
+- `/incidents` for active incident triage with metric cards, severity distribution, desktop side filter panel, search, filters, sorting, compact grid cards, approve/reject, archive, and detail links.
+- `/archive` for archived incidents with archive metrics, desktop side filter panel, search, filters, sorting, compact grid cards, unarchive, and detail links.
 - `/incidents/{id}` for read-only incident viewing until an analyst explicitly creates a manual playbook. Timeline and action history are presented newest-first in the UI.
 - `/report` for the global AI-generated executive summary based on currently stored incidents.
+
+The frontend uses a neutral dark admin-console theme with restrained severity colors, compact cards, subtle CSS-only appearance animation, and `prefers-reduced-motion` support.
 
 Open:
 

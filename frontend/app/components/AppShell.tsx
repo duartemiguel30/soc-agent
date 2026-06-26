@@ -21,6 +21,7 @@ export function AppShell({ user, children }: AppShellProps) {
   const pathname = usePathname();
   const router = useRouter();
   const [loggingOut, setLoggingOut] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   async function handleLogout() {
     setLoggingOut(true);
@@ -33,35 +34,55 @@ export function AppShell({ user, children }: AppShellProps) {
 
   return (
     <div className="app-shell">
-      <aside className="sidebar">
-        <div>
-          <Link className="brand" href="/dashboard">
+      <header className="app-header">
+        <div className="header-inner">
+          <Link className="brand" href="/dashboard" onClick={() => setMenuOpen(false)}>
             <span className="brand-mark">SOC</span>
             <span>
               <strong>SOC AI Agent</strong>
               <small>Admin console</small>
             </span>
           </Link>
-          <nav className="nav-list" aria-label="Primary navigation">
+
+          <button
+            className="menu-toggle"
+            type="button"
+            aria-expanded={menuOpen}
+            aria-controls="primary-navigation"
+            onClick={() => setMenuOpen((open) => !open)}
+          >
+            <span />
+            <span />
+            <span />
+            Menu
+          </button>
+
+          <nav
+            className={menuOpen ? "nav-list open" : "nav-list"}
+            id="primary-navigation"
+            aria-label="Primary navigation"
+          >
             {navItems.map((item) => (
               <Link
                 key={item.href}
                 className={pathname === item.href ? "nav-link active" : "nav-link"}
                 href={item.href}
+                onClick={() => setMenuOpen(false)}
               >
                 {item.label}
               </Link>
             ))}
           </nav>
+
+          <div className="session-card">
+            <span>Signed in</span>
+            <strong>{user.username}</strong>
+            <button className="button ghost" onClick={handleLogout} disabled={loggingOut}>
+              {loggingOut ? "Logging out..." : "Logout"}
+            </button>
+          </div>
         </div>
-        <div className="session-card">
-          <span>Signed in as</span>
-          <strong>{user.username}</strong>
-          <button className="button ghost full" onClick={handleLogout} disabled={loggingOut}>
-            {loggingOut ? "Logging out..." : "Logout"}
-          </button>
-        </div>
-      </aside>
+      </header>
       <div className="content-shell">{children}</div>
     </div>
   );
