@@ -71,6 +71,14 @@ function isAdDryRunAction(action: ResponseAction) {
   return action.key === "disable_ad_account" && action.dry_run?.mode === "dry_run";
 }
 
+function actionGroups(actions: ResponseAction[]) {
+  return {
+    suggested: actions.filter((action) => action.available && action.category === "suggested"),
+    available: actions.filter((action) => action.available && action.category !== "suggested"),
+    unavailable: actions.filter((action) => !action.available),
+  };
+}
+
 export default function IncidentDetailPage() {
   const params = useParams<{ id: string }>();
   const incidentId = params.id;
@@ -126,6 +134,7 @@ export default function IncidentDetailPage() {
   }, [refresh]);
 
   const pending = useMemo(() => (incident ? isPendingIncident(incident) : false), [incident]);
+  const groupedResponseActions = useMemo(() => actionGroups(responseActions), [responseActions]);
 
   async function handleStepChange(stepId: number, status: PlaybookStep["status"]) {
     setBusy(true);
@@ -267,6 +276,83 @@ export default function IncidentDetailPage() {
     setResponseActionConfirms((current) => ({ ...current, [actionKey]: value }));
   }
 
+  function renderAvailableResponseAction(action: ResponseAction, group: "suggested" | "available") {
+    const latestResult = responseActionResults[action.key];
+    const previewText = resultText(latestResult || action.dry_run);
+    const isHighRisk = action.risk_level === "high" || action.risk_level === "critical";
+    const needsAdConfirm = action.key === "disable_ad_account";
+    const adDryRun = isAdDryRunAction(action);
+    const reason = responseActionReasons[action.key] || "";
+    const confirm = responseActionConfirms[action.key] || "";
+    const executeDisabled = busy || (needsAdConfirm && (confirm !== "DISABLE_ACCOUNT" || !reason.trim()));
+
+    return (
+      <article className={`response-action-card ${group}`} key={action.key}>
+        <div className="response-action-head">
+          <div>
+            <h3>{action.name}</h3>
+            <p>{action.description}</p>
+          </div>
+          <div className="badge-row">
+            <span className={`badge risk-${action.risk_level}`}>{labelValue(action.risk_level)}</span>
+            {adDryRun ? <span className="badge">Dry-run</span> : null}
+            <span className="badge available">{group === "suggested" ? "Suggested" : "Available"}</span>
+          </div>
+        </div>
+        <div className="response-action-meta">
+          <span>Requires: {action.required_observables.map(labelValue).join(", ")}</span>
+          <span>{action.suggested_reason || action.availability_reason}</span>
+          {adDryRun ? <span>No AD account will be disabled in dry-run mode.</span> : null}
+        </div>
+        {previewText ? <div className="dry-run-output">{previewText}</div> : null}
+        {needsAdConfirm && adDryRun ? (
+          <div className="confirmation-grid">
+            <label className="field">
+              Confirmation
+              <input
+                value={confirm}
+                onChange={(event) => setActionConfirm(action.key, event.target.value)}
+                placeholder="DISABLE_ACCOUNT"
+                disabled={busy}
+              />
+            </label>
+            <label className="field">
+              Analyst reason
+              <input
+                value={reason}
+                onChange={(event) => setActionReason(action.key, event.target.value)}
+                placeholder="Required before recording dry-run"
+                disabled={busy}
+              />
+            </label>
+          </div>
+        ) : isHighRisk ? (
+          <label className="field">
+            Analyst reason
+            <input
+              value={reason}
+              onChange={(event) => setActionReason(action.key, event.target.value)}
+              placeholder="Recommended for high-risk actions"
+              disabled={busy}
+            />
+          </label>
+        ) : null}
+        <div className="action-row">
+          <button className="button secondary" onClick={() => handleResponseActionDryRun(action.key)} disabled={busy}>
+            Dry run
+          </button>
+          <button
+            className={isHighRisk ? "button danger" : "button primary"}
+            onClick={() => handleResponseActionExecute(action)}
+            disabled={executeDisabled}
+          >
+            {adDryRun ? "Record dry-run confirmation" : "Execute"}
+          </button>
+        </div>
+      </article>
+    );
+  }
+
   return (
     <AuthGuard>
       {(user) => (
@@ -372,6 +458,10 @@ export default function IncidentDetailPage() {
                       <h2>Observables</h2>
                       <span>{observables.length}</span>
                     </div>
+                    <p className="section-subtitle">
+                      Observables are concrete values extracted from the Wazuh/Sysmon alert, such as source IPs,
+                      usernames, processes, hosts, or command lines. Response actions use these values when available.
+                    </p>
                     <div className="observable-list">
                       {observables.length ? (
                         observables.map((observable) => (
@@ -391,91 +481,45 @@ export default function IncidentDetailPage() {
                       <h2>Response Actions</h2>
                       <span>{responseActions.length}</span>
                     </div>
-                    <div className="response-action-list">
-                      {responseActions.map((action) => {
-                        const latestResult = responseActionResults[action.key];
-                        const previewText = resultText(latestResult || action.dry_run);
-                        const isHighRisk = action.risk_level === "high" || action.risk_level === "critical";
-                        const needsAdConfirm = action.key === "disable_ad_account";
-                        const adDryRun = isAdDryRunAction(action);
-                        const reason = responseActionReasons[action.key] || "";
-                        const confirm = responseActionConfirms[action.key] || "";
-                        const executeDisabled =
-                          busy ||
-                          !action.available ||
-                          (needsAdConfirm && (confirm !== "DISABLE_ACCOUNT" || !reason.trim()));
+                    <p className="section-subtitle">
+                      Actions are shown by context. Suggested actions match incident evidence or AI recommendation text;
+                      other available actions are possible but not specifically recommended.
+                    </p>
+                    <div className="response-action-groups">
+                      <div className="response-action-group">
+                        <h3>Suggested response actions</h3>
+                        {groupedResponseActions.suggested.length ? (
+                          <div className="response-action-list">
+                            {groupedResponseActions.suggested.map((action) => renderAvailableResponseAction(action, "suggested"))}
+                          </div>
+                        ) : (
+                          <div className="empty-state compact">No response actions are specifically suggested for this incident.</div>
+                        )}
+                      </div>
 
-                        return (
-                          <article className="response-action-card" key={action.key}>
-                            <div className="response-action-head">
-                              <div>
-                                <h3>{action.name}</h3>
-                                <p>{action.description}</p>
+                      {groupedResponseActions.available.length ? (
+                        <div className="response-action-group secondary-group">
+                          <h3>Other available actions</h3>
+                          <div className="response-action-list">
+                            {groupedResponseActions.available.map((action) => renderAvailableResponseAction(action, "available"))}
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {groupedResponseActions.unavailable.length ? (
+                        <details className="unavailable-actions">
+                          <summary>Unavailable actions ({groupedResponseActions.unavailable.length})</summary>
+                          <div className="unavailable-action-list">
+                            {groupedResponseActions.unavailable.map((action) => (
+                              <div className="unavailable-action-row" key={action.key}>
+                                <strong>{action.name}</strong>
+                                <span>Unavailable: {action.availability_reason}</span>
+                                <small>Requires: {action.required_observables.map(labelValue).join(", ")}</small>
                               </div>
-                              <div className="badge-row">
-                                <span className={`badge risk-${action.risk_level}`}>{labelValue(action.risk_level)}</span>
-                                <span className={action.available ? "badge available" : "badge unavailable"}>
-                                  {action.available ? "Available" : "Unavailable"}
-                                </span>
-                              </div>
-                            </div>
-                            <div className="response-action-meta">
-                              <span>Requires: {action.required_observables.map(labelValue).join(", ")}</span>
-                              <span>{action.availability_reason}</span>
-                              {adDryRun ? <span>No AD account will be disabled in dry-run mode.</span> : null}
-                            </div>
-                            {previewText ? <div className="dry-run-output">{previewText}</div> : null}
-                            {needsAdConfirm ? (
-                              <div className="confirmation-grid">
-                                <label className="field">
-                                  Confirmation
-                                  <input
-                                    value={confirm}
-                                    onChange={(event) => setActionConfirm(action.key, event.target.value)}
-                                    placeholder="DISABLE_ACCOUNT"
-                                    disabled={busy || !action.available}
-                                  />
-                                </label>
-                                <label className="field">
-                                  Analyst reason
-                                  <input
-                                    value={reason}
-                                    onChange={(event) => setActionReason(action.key, event.target.value)}
-                                    placeholder={adDryRun ? "Required before recording dry-run" : "Required before execute"}
-                                    disabled={busy || !action.available}
-                                  />
-                                </label>
-                              </div>
-                            ) : isHighRisk ? (
-                              <label className="field">
-                                Analyst reason
-                                <input
-                                  value={reason}
-                                  onChange={(event) => setActionReason(action.key, event.target.value)}
-                                  placeholder="Recommended for high-risk actions"
-                                  disabled={busy || !action.available}
-                                />
-                              </label>
-                            ) : null}
-                            <div className="action-row">
-                              <button
-                                className="button secondary"
-                                onClick={() => handleResponseActionDryRun(action.key)}
-                                disabled={busy || !action.available}
-                              >
-                                Dry run
-                              </button>
-                              <button
-                                className={isHighRisk ? "button danger" : "button primary"}
-                                onClick={() => handleResponseActionExecute(action)}
-                                disabled={executeDisabled}
-                              >
-                                {adDryRun ? "Record dry-run confirmation" : "Execute"}
-                              </button>
-                            </div>
-                          </article>
-                        );
-                      })}
+                            ))}
+                          </div>
+                        </details>
+                      ) : null}
                     </div>
                   </section>
 

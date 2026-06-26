@@ -133,6 +133,9 @@ export type ResponseAction = {
   availability_reason: string;
   needs_human_review?: boolean;
   dry_run?: ResponseActionResult | null;
+  suggested?: boolean;
+  suggested_reason?: string | null;
+  category?: "suggested" | "available" | "unavailable" | string;
 };
 
 export type TimelineEvent = {

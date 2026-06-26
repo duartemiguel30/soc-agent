@@ -559,8 +559,8 @@ def get_incident_response_actions(
     admin: dict = Depends(get_current_admin),
 ):
     """Return policy-gated response actions and dry-run previews for this incident."""
-    get_incident_or_404(db, incident_id)
-    return describe_actions(db, incident_id)
+    incident = get_incident_or_404(db, incident_id)
+    return describe_actions(db, incident_id, incident)
 
 
 @app.post("/incidents/{incident_id}/response-actions/{action_key}/dry-run")

@@ -1,4 +1,5 @@
 import os
+from typing import Any
 
 from db.models import IncidentObservable
 from playbooks.service import log_action_event
@@ -40,7 +41,62 @@ def list_observables(db, incident_id: str) -> list[IncidentObservable]:
     )
 
 
-def describe_actions(db, incident_id: str) -> list[dict]:
+def normalize_text(value: Any) -> str:
+    return str(value or "").lower()
+
+
+def text_contains_any(text: str, keywords: tuple[str, ...]) -> bool:
+    return any(keyword in text for keyword in keywords)
+
+
+def suggested_metadata(action_key: str, incident, mapped: dict[str, list[str]], available: bool) -> tuple[bool, str | None]:
+    if not available:
+        return False, None
+
+    context = " ".join(
+        normalize_text(value)
+        for value in (
+            getattr(incident, "recommended_action", None),
+            getattr(incident, "rule_description", None),
+            getattr(incident, "mitre_technique", None),
+            getattr(incident, "classification", None),
+            getattr(incident, "reasoning", None),
+        )
+    )
+
+    if action_key == "block_source_ip":
+        if not mapped.get("src_ip"):
+            return False, None
+        if text_contains_any(context, ("block", "firewall", "deny", "source ip", "src_ip", " ip ", "containment")):
+            return True, "Incident context mentions IP blocking, firewall denial, or containment and a source IP is available."
+        if text_contains_any(context, ("source", "remote address", "network")):
+            return True, "Incident context appears source-IP based and a source IP is available."
+        return False, None
+
+    if action_key == "disable_ad_account":
+        has_username = any(mapped.get(key) for key in ("target_username", "subject_username", "user"))
+        if not has_username:
+            return False, None
+        if text_contains_any(
+            context,
+            (
+                "disable account",
+                "lock account",
+                "user account",
+                "ad account",
+                "compromised account",
+                "account compromise",
+            ),
+        ):
+            return True, "Incident context mentions account disablement or account compromise and a username is available."
+        if text_contains_any(context, ("brute force", "failed login", "failed logon", "suspicious login", "t1110")):
+            return True, "Login or brute-force context with a username can justify account containment review."
+        return False, None
+
+    return False, None
+
+
+def describe_actions(db, incident_id: str, incident=None) -> list[dict]:
     observables = list_observables(db, incident_id)
     mapped = observable_map(observables)
     config = response_action_config()
@@ -48,6 +104,8 @@ def describe_actions(db, incident_id: str) -> list[dict]:
     for action in get_response_actions():
         availability = action.availability(mapped, config)
         dry_run = action.dry_run(mapped, config) if availability["available"] else None
+        suggested, suggested_reason = suggested_metadata(action.key, incident, mapped, availability["available"])
+        category = "suggested" if availability["available"] and suggested else "available" if availability["available"] else "unavailable"
         descriptions.append(
             {
                 "key": action.key,
@@ -59,6 +117,9 @@ def describe_actions(db, incident_id: str) -> list[dict]:
                 "availability_reason": availability["reason"],
                 "needs_human_review": availability.get("needs_human_review", False),
                 "dry_run": dry_run,
+                "suggested": suggested,
+                "suggested_reason": suggested_reason,
+                "category": category,
             }
         )
     return descriptions
