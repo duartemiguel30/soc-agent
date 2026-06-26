@@ -14,6 +14,7 @@ from db.models import (
     IncidentActionEvent,
     IncidentArchiveState,
     IncidentNote,
+    IncidentObservable,
     IncidentPlaybook,
     IncidentPlaybookStep,
 )
@@ -23,6 +24,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from playbooks.service import get_or_create_playbook, load_playbook, log_action_event, template_suggestion
+from response_actions.service import describe_actions, dry_run_action, execute_action, list_observables
 from security import hash_session_token, verify_password
 from sqlalchemy.orm import Session
 
@@ -62,6 +64,11 @@ class NoteCreate(BaseModel):
 
 
 class ArchiveRequest(BaseModel):
+    reason: str | None = None
+
+
+class ResponseActionRequest(BaseModel):
+    confirm: str | None = None
     reason: str | None = None
 
 
@@ -222,6 +229,96 @@ def serialize_action_event(event: IncidentActionEvent) -> dict:
     }
 
 
+def serialize_observable(observable: IncidentObservable) -> dict:
+    return {
+        "id": observable.id,
+        "incident_id": observable.incident_id,
+        "key": observable.key,
+        "value": observable.value,
+        "source": observable.source,
+        "created_at": observable.created_at,
+    }
+
+
+def get_nested_value(data: dict, path: tuple[str, ...]):
+    current = data
+    for key in path:
+        if not isinstance(current, dict):
+            return None
+        if key in current:
+            current = current[key]
+            continue
+        lower_key = key.lower()
+        matched_key = next((candidate for candidate in current if str(candidate).lower() == lower_key), None)
+        if matched_key is None:
+            return None
+        current = current[matched_key]
+    return current
+
+
+def clean_observable_value(value) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, (dict, list)):
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def extract_wazuh_observables(alert: dict) -> list[tuple[str, str]]:
+    field_map = {
+        "agent_name": [("agent", "name")],
+        "agent_id": [("agent", "id")],
+        "src_ip": [
+            ("data", "srcip"),
+            ("data", "src_ip"),
+            ("data", "win", "eventdata", "sourceIp"),
+            ("data", "win", "eventdata", "sourceIpAddress"),
+        ],
+        "target_username": [("data", "win", "eventdata", "targetUserName")],
+        "subject_username": [("data", "win", "eventdata", "subjectUserName")],
+        "user": [("data", "win", "eventdata", "user")],
+        "process_name": [("data", "win", "eventdata", "image")],
+        "parent_process_name": [("data", "win", "eventdata", "parentImage")],
+        "command_line": [("data", "win", "eventdata", "commandLine")],
+        "target_image": [("data", "win", "eventdata", "targetImage")],
+        "host": [("data", "win", "system", "computer")],
+    }
+    observables: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for key, paths in field_map.items():
+        for path in paths:
+            value = clean_observable_value(get_nested_value(alert, path))
+            if not value:
+                continue
+            candidate = (key, value)
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            observables.append(candidate)
+    return observables
+
+
+def store_wazuh_observables(db: Session, incident_id: str, alert: dict) -> None:
+    try:
+        observables = extract_wazuh_observables(alert)
+        for key, value in observables:
+            exists = (
+                db.query(IncidentObservable)
+                .filter(
+                    IncidentObservable.incident_id == incident_id,
+                    IncidentObservable.key == key,
+                    IncidentObservable.value == value,
+                )
+                .first()
+            )
+            if exists:
+                continue
+            db.add(IncidentObservable(incident_id=incident_id, key=key, value=value, source="wazuh"))
+    except Exception as exc:
+        logger.warning("Observable extraction skipped for incident %s: %s", incident_id, exc)
+
+
 def update_playbook_status(db: Session, playbook_id: int) -> None:
     playbook = db.query(IncidentPlaybook).filter(IncidentPlaybook.id == playbook_id).first()
     if not playbook:
@@ -359,6 +456,7 @@ async def receive_alert(alert: dict, db: Session = Depends(get_db)):
         status=result.get("status"),
     )
     db.add(incident)
+    store_wazuh_observables(db, incident_id, alert)
     log_action_event(
         db,
         incident_id,
@@ -441,6 +539,80 @@ def get_incident_detail(
     """Return a single incident with stored AI analysis fields."""
     incident = get_incident_or_404(db, incident_id)
     return serialize_incident(incident, get_archive_state(db, incident_id))
+
+
+@app.get("/incidents/{incident_id}/observables")
+def get_incident_observables(
+    incident_id: str,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    """Return extracted incident observables without mutating incident state."""
+    get_incident_or_404(db, incident_id)
+    return [serialize_observable(observable) for observable in list_observables(db, incident_id)]
+
+
+@app.get("/incidents/{incident_id}/response-actions")
+def get_incident_response_actions(
+    incident_id: str,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    """Return policy-gated response actions and dry-run previews for this incident."""
+    get_incident_or_404(db, incident_id)
+    return describe_actions(db, incident_id)
+
+
+@app.post("/incidents/{incident_id}/response-actions/{action_key}/dry-run")
+def dry_run_incident_response_action(
+    incident_id: str,
+    action_key: str,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    """Run response action validation and preview only; dry-runs are not logged to avoid noisy history."""
+    get_incident_or_404(db, incident_id)
+    result = dry_run_action(db, incident_id, action_key)
+    status_code = result.pop("status_code", None)
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=status_code or status.HTTP_400_BAD_REQUEST,
+            detail=result.get("message") or "Dry-run failed",
+        )
+    return result
+
+
+@app.post("/incidents/{incident_id}/response-actions/{action_key}/execute")
+def execute_incident_response_action(
+    incident_id: str,
+    action_key: str,
+    payload: ResponseActionRequest | None = None,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    """Execute a policy-gated response action only after explicit analyst request."""
+    get_incident_or_404(db, incident_id)
+    if action_key == "disable_ad_account":
+        if not payload or payload.confirm != "DISABLE_ACCOUNT":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="disable_ad_account requires confirm=DISABLE_ACCOUNT.",
+            )
+        if not payload.reason or not payload.reason.strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="disable_ad_account requires an analyst reason.",
+            )
+
+    reason = payload.reason.strip() if payload and payload.reason else None
+    result = execute_action(db, incident_id, action_key, current_admin_username(admin), reason)
+    status_code = result.pop("status_code", None)
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=status_code or status.HTTP_400_BAD_REQUEST,
+            detail=result.get("message") or "Response action failed",
+        )
+    return result
 
 
 @app.post("/incidents/{incident_id}/archive")

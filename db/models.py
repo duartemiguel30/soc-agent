@@ -21,6 +21,20 @@ class Incident(Base):
     created_at = Column(DateTime, default=func.now())
 
 
+class IncidentObservable(Base):
+    __tablename__ = "incident_observables"
+    __table_args__ = (
+        UniqueConstraint("incident_id", "key", "value", name="uq_incident_observable_key_value"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    incident_id = Column(String, ForeignKey("incidents.id"), index=True, nullable=False)
+    key = Column(String, index=True, nullable=False)
+    value = Column(Text, nullable=False)
+    source = Column(String, default="wazuh", nullable=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+
+
 class AdminUser(Base):
     __tablename__ = "admin_users"
 

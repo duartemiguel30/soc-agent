@@ -10,18 +10,25 @@ import {
   archiveIncident,
   approveIncident,
   createIncidentPlaybook,
+  dryRunResponseAction,
+  executeResponseAction,
   getIncident,
   getIncidentPlaybook,
   getIncidentTimeline,
   Incident,
   IncidentActionEvent,
   IncidentNote,
+  IncidentObservable,
   IncidentPlaybook,
+  listIncidentObservables,
   listIncidentActions,
   listIncidentNotes,
+  listIncidentResponseActions,
   PlaybookTemplateSuggestion,
   PlaybookStep,
   rejectIncident,
+  ResponseAction,
+  ResponseActionResult,
   TimelineEvent,
   unarchiveIncident,
   updatePlaybookStep,
@@ -50,6 +57,20 @@ function DetailRow({ label, value }: { label: string; value?: string | number | 
   );
 }
 
+function resultText(result?: ResponseActionResult | null) {
+  if (!result) {
+    return null;
+  }
+  if (result.message) {
+    return result.message;
+  }
+  return JSON.stringify(result);
+}
+
+function isAdDryRunAction(action: ResponseAction) {
+  return action.key === "disable_ad_account" && action.dry_run?.mode === "dry_run";
+}
+
 export default function IncidentDetailPage() {
   const params = useParams<{ id: string }>();
   const incidentId = params.id;
@@ -59,6 +80,11 @@ export default function IncidentDetailPage() {
   const [notes, setNotes] = useState<IncidentNote[]>([]);
   const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
   const [actions, setActions] = useState<IncidentActionEvent[]>([]);
+  const [observables, setObservables] = useState<IncidentObservable[]>([]);
+  const [responseActions, setResponseActions] = useState<ResponseAction[]>([]);
+  const [responseActionResults, setResponseActionResults] = useState<Record<string, ResponseActionResult>>({});
+  const [responseActionReasons, setResponseActionReasons] = useState<Record<string, string>>({});
+  const [responseActionConfirms, setResponseActionConfirms] = useState<Record<string, string>>({});
   const [noteBody, setNoteBody] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -72,10 +98,12 @@ export default function IncidentDetailPage() {
         getIncident(incidentId),
         getIncidentPlaybook(incidentId),
       ]);
-      const [notesData, timelineData, actionsData] = await Promise.all([
+      const [notesData, timelineData, actionsData, observablesData, responseActionsData] = await Promise.all([
         listIncidentNotes(incidentId),
         getIncidentTimeline(incidentId),
         listIncidentActions(incidentId),
+        listIncidentObservables(incidentId),
+        listIncidentResponseActions(incidentId),
       ]);
       setIncident(incidentData);
       setPlaybook(playbookData.playbook);
@@ -83,6 +111,8 @@ export default function IncidentDetailPage() {
       setNotes(notesData);
       setTimeline([...timelineData].sort((a, b) => dateTime(b.timestamp) - dateTime(a.timestamp)));
       setActions([...actionsData].sort((a, b) => dateTime(b.created_at) - dateTime(a.created_at)));
+      setObservables(observablesData);
+      setResponseActions(responseActionsData);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load incident detail");
     } finally {
@@ -189,6 +219,54 @@ export default function IncidentDetailPage() {
     }
   }
 
+  async function handleResponseActionDryRun(actionKey: string) {
+    setBusy(true);
+    setNotice(null);
+    setError(null);
+    try {
+      const result = await dryRunResponseAction(incidentId, actionKey);
+      setResponseActionResults((current) => ({ ...current, [actionKey]: result }));
+      setNotice("Dry-run completed. No response action was executed.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Response action dry-run failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleResponseActionExecute(action: ResponseAction) {
+    setBusy(true);
+    setNotice(null);
+    setError(null);
+    try {
+      const reason = (responseActionReasons[action.key] || "").trim();
+      const confirm = (responseActionConfirms[action.key] || "").trim();
+      const result = await executeResponseAction(incidentId, action.key, {
+        confirm: action.key === "disable_ad_account" ? confirm : undefined,
+        reason: reason || undefined,
+      });
+      setResponseActionResults((current) => ({ ...current, [action.key]: result }));
+      await refresh();
+      setNotice(
+        result.mode === "dry_run"
+          ? result.message || "Dry-run confirmation recorded. No real response action was executed."
+          : result.message || "Response action completed.",
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Response action execution failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function setActionReason(actionKey: string, value: string) {
+    setResponseActionReasons((current) => ({ ...current, [actionKey]: value }));
+  }
+
+  function setActionConfirm(actionKey: string, value: string) {
+    setResponseActionConfirms((current) => ({ ...current, [actionKey]: value }));
+  }
+
   return (
     <AuthGuard>
       {(user) => (
@@ -286,6 +364,118 @@ export default function IncidentDetailPage() {
                         <span>Recommended action</span>
                         <p>{incident.recommended_action || "No recommended action returned."}</p>
                       </div>
+                    </div>
+                  </section>
+
+                  <section className="panel">
+                    <div className="section-head">
+                      <h2>Observables</h2>
+                      <span>{observables.length}</span>
+                    </div>
+                    <div className="observable-list">
+                      {observables.length ? (
+                        observables.map((observable) => (
+                          <div className="observable-row" key={observable.id}>
+                            <span>{labelValue(observable.key)}</span>
+                            <strong>{observable.value}</strong>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="empty-state">No observables extracted for this incident.</div>
+                      )}
+                    </div>
+                  </section>
+
+                  <section className="panel">
+                    <div className="section-head">
+                      <h2>Response Actions</h2>
+                      <span>{responseActions.length}</span>
+                    </div>
+                    <div className="response-action-list">
+                      {responseActions.map((action) => {
+                        const latestResult = responseActionResults[action.key];
+                        const previewText = resultText(latestResult || action.dry_run);
+                        const isHighRisk = action.risk_level === "high" || action.risk_level === "critical";
+                        const needsAdConfirm = action.key === "disable_ad_account";
+                        const adDryRun = isAdDryRunAction(action);
+                        const reason = responseActionReasons[action.key] || "";
+                        const confirm = responseActionConfirms[action.key] || "";
+                        const executeDisabled =
+                          busy ||
+                          !action.available ||
+                          (needsAdConfirm && (confirm !== "DISABLE_ACCOUNT" || !reason.trim()));
+
+                        return (
+                          <article className="response-action-card" key={action.key}>
+                            <div className="response-action-head">
+                              <div>
+                                <h3>{action.name}</h3>
+                                <p>{action.description}</p>
+                              </div>
+                              <div className="badge-row">
+                                <span className={`badge risk-${action.risk_level}`}>{labelValue(action.risk_level)}</span>
+                                <span className={action.available ? "badge available" : "badge unavailable"}>
+                                  {action.available ? "Available" : "Unavailable"}
+                                </span>
+                              </div>
+                            </div>
+                            <div className="response-action-meta">
+                              <span>Requires: {action.required_observables.map(labelValue).join(", ")}</span>
+                              <span>{action.availability_reason}</span>
+                              {adDryRun ? <span>No AD account will be disabled in dry-run mode.</span> : null}
+                            </div>
+                            {previewText ? <div className="dry-run-output">{previewText}</div> : null}
+                            {needsAdConfirm ? (
+                              <div className="confirmation-grid">
+                                <label className="field">
+                                  Confirmation
+                                  <input
+                                    value={confirm}
+                                    onChange={(event) => setActionConfirm(action.key, event.target.value)}
+                                    placeholder="DISABLE_ACCOUNT"
+                                    disabled={busy || !action.available}
+                                  />
+                                </label>
+                                <label className="field">
+                                  Analyst reason
+                                  <input
+                                    value={reason}
+                                    onChange={(event) => setActionReason(action.key, event.target.value)}
+                                    placeholder={adDryRun ? "Required before recording dry-run" : "Required before execute"}
+                                    disabled={busy || !action.available}
+                                  />
+                                </label>
+                              </div>
+                            ) : isHighRisk ? (
+                              <label className="field">
+                                Analyst reason
+                                <input
+                                  value={reason}
+                                  onChange={(event) => setActionReason(action.key, event.target.value)}
+                                  placeholder="Recommended for high-risk actions"
+                                  disabled={busy || !action.available}
+                                />
+                              </label>
+                            ) : null}
+                            <div className="action-row">
+                              <button
+                                className="button secondary"
+                                onClick={() => handleResponseActionDryRun(action.key)}
+                                disabled={busy || !action.available}
+                              >
+                                Dry run
+                              </button>
+                              <button
+                                className={isHighRisk ? "button danger" : "button primary"}
+                                onClick={() => handleResponseActionExecute(action)}
+                                disabled={executeDisabled}
+                              >
+                                {adDryRun ? "Record dry-run confirmation" : "Execute"}
+                              </button>
+                            </div>
+                          </article>
+                        );
+                      })}
                     </div>
                   </section>
 

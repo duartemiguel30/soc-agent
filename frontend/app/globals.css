@@ -593,6 +593,24 @@ button:disabled {
   color: var(--low);
 }
 
+.badge.risk-high,
+.badge.risk-critical,
+.badge.unavailable {
+  border-color: rgba(255, 100, 100, 0.55);
+  color: var(--danger);
+}
+
+.badge.risk-medium {
+  border-color: rgba(245, 196, 81, 0.55);
+  color: var(--medium);
+}
+
+.badge.risk-low,
+.badge.available {
+  border-color: rgba(45, 212, 191, 0.55);
+  color: var(--low);
+}
+
 .incident-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -924,6 +942,85 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
+.observable-list,
+.response-action-list {
+  display: grid;
+  gap: 10px;
+}
+
+.observable-row {
+  display: grid;
+  grid-template-columns: minmax(110px, 0.42fr) minmax(0, 1fr);
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(11, 17, 28, 0.62);
+  padding: 9px;
+}
+
+.observable-row span,
+.response-action-meta {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.observable-row strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.response-action-card {
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(11, 17, 28, 0.62);
+  padding: 12px;
+}
+
+.response-action-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.response-action-head h3,
+.response-action-head p {
+  margin: 0;
+}
+
+.response-action-head h3 {
+  font-size: 0.98rem;
+}
+
+.response-action-head p {
+  color: #cbd5e1;
+  line-height: 1.45;
+  margin-top: 4px;
+}
+
+.response-action-meta {
+  display: grid;
+  gap: 5px;
+}
+
+.dry-run-output {
+  border: 1px solid rgba(94, 168, 255, 0.28);
+  border-radius: 8px;
+  background: rgba(47, 129, 247, 0.08);
+  color: #d9eaff;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  padding: 9px;
+}
+
+.confirmation-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
 .playbook-step {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) 170px;
@@ -1187,9 +1284,16 @@ button:disabled {
   .severity-strip,
   .incident-grid,
   .incident-grid.compact,
+  .observable-row,
+  .confirmation-grid,
   .filter-grid,
   .search-row {
     grid-template-columns: 1fr;
+  }
+
+  .response-action-head {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .nav-list {

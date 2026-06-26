@@ -11,6 +11,14 @@ AUTH_COOKIE_NAME=soc_admin_session
 AUTH_COOKIE_SECURE=false
 FRONTEND_ORIGIN=http://192.168.56.105:3000
 SESSION_TTL_HOURS=8
+RESPONSE_ACTIONS_ENABLED=true
+AD_ACTIONS_ENABLED=false
+AD_ACTION_MODE=dry_run
+AD_DOMAIN=WINDOMAIN
+AD_DOMAIN_CONTROLLER=dc.windomain.local
+AD_USERNAME=
+AD_PASSWORD=
+AD_PROTECTED_USERS=Administrator,admin,krbtgt,vagrant,Domain Admins,Enterprise Admins,Schema Admins
 ```
 
 Admin users are stored in SQLite in the `admin_users` table. Admin sessions are stored in SQLite in the `admin_sessions` table. The browser receives only an opaque HttpOnly session cookie; the database stores only `token_hash`, never the raw token. No `JWT_SECRET` is needed, and no default admin is created automatically.
@@ -65,6 +73,10 @@ Protected backend routes:
 - `GET /incidents/pending`
 - `GET /incidents/archive`
 - `GET /incidents/{id}`
+- `GET /incidents/{id}/observables`
+- `GET /incidents/{id}/response-actions`
+- `POST /incidents/{id}/response-actions/{action_key}/dry-run`
+- `POST /incidents/{id}/response-actions/{action_key}/execute`
 - `GET /incidents/{id}/playbook`
 - `POST /incidents/{id}/playbook`
 - `PATCH /playbook/steps/{step_id}`
@@ -85,6 +97,29 @@ Public backend routes:
 - `GET /` serving the legacy fallback dashboard
 
 The Wazuh webhook remains public because Wazuh calls it directly.
+
+## Observables and Response Actions
+
+Wazuh ingestion extracts additive incident observables into `incident_observables` without altering the existing `incidents` table. Extracted keys include agent name/id, source IP, target and subject usernames, Windows event user, process image, parent image, command line, target image, and host when those fields exist in the raw Wazuh/Sysmon payload. Missing fields are ignored, empty values are not stored, and `(incident_id, key, value)` is unique to avoid exact duplicates. Older incidents may have no observables.
+
+Response actions are analyst-controlled defensive operations shown on `/incidents/{id}` in the Next.js UI. Gemini/AI analysis may recommend an action, but it does not execute actions. The Wazuh webhook does not execute response actions, and the LangGraph auto-response path stores only the decision/status.
+
+Initial actions:
+
+- `block_source_ip`: medium risk, requires `src_ip`. Dry-run shows the iptables DROP command. Execute validates the IP, rejects loopback/multicast/unspecified addresses, checks for an existing iptables rule first, and fails clearly if the host is not Linux or `iptables` is unavailable.
+- `disable_ad_account`: high risk, requires `target_username`, `subject_username`, or `user`. It is disabled by default via `AD_ACTIONS_ENABLED=false`. When explicitly enabled with `AD_ACTION_MODE=dry_run`, even explicit analyst confirmation does not disable the account; it records a dry-run confirmation/simulation only. Real WinRM/PowerShell AD disable execution is not implemented in this build and returns a human-review requirement instead of fake success.
+
+Dry-run endpoints perform validation and preview only. They are intentionally not logged to `incident_action_events` to avoid noisy history from repeated previews. Execute attempts log according to what actually happened: `response_action_executed` is reserved for real executed actions, `response_action_failed` records failed requested actions, and `response_action_dry_run_confirmed` records analyst-confirmed simulations where no real system state changed.
+
+High-risk AD disable execution requires this request body:
+
+```json
+{ "confirm": "DISABLE_ACCOUNT", "reason": "Analyst-approved containment rationale" }
+```
+
+AD username safety checks reject unsupported characters, machine accounts, and protected names such as `Administrator`, `admin`, `krbtgt`, `vagrant`, Domain Admins-like accounts, and any additional comma-separated names in `AD_PROTECTED_USERS`.
+
+Do not store AD credentials in Git. Keep `.env` local to the logger VM or lab host. Real AD execution should only be added and tested in a lab with explicit connectivity, credential handling, and rollback procedures.
 
 ## Incident Archive
 
@@ -113,7 +148,7 @@ Template selection uses existing incident fields:
 - Scheduled task persistence: MITRE `T1053` or `T1053.005`, rule ID `100007`, or descriptions mentioning scheduled task.
 - Generic suspicious alert: fallback for all other alerts.
 
-Each playbook has ordered checklist steps with statuses `todo`, `in_progress`, `done`, and `skipped`. Analysts can add notes, and the backend records historical `incident_action_events` for incident-specific actions: playbook creation, step updates, notes, approvals, archive actions, and rejections. The timeline uses these action events as its primary source; synthetic incident/AI/playbook fallback entries are only added for older incidents that do not have equivalent action events. Notes appear in the timeline through `note_added` action events; old notes without a corresponding action event are added as fallback timeline entries without duplicating logged notes. The Notes panel always shows full note bodies. The backend returns timeline and action history chronologically; the Next.js incident detail page displays timeline and action history newest-first. The global `/report` endpoint remains read-only and does not write incident history. The incident detail page shows the playbook or suggested template, analyst notes, combined timeline, and action history.
+Each playbook has ordered checklist steps with statuses `todo`, `in_progress`, `done`, and `skipped`. Analysts can add notes, and the backend records historical `incident_action_events` for incident-specific actions: playbook creation, step updates, notes, approvals, archive actions, response action execution attempts, and rejections. The timeline uses these action events as its primary source; synthetic incident/AI/playbook fallback entries are only added for older incidents that do not have equivalent action events. Notes appear in the timeline through `note_added` action events; old notes without a corresponding action event are added as fallback timeline entries without duplicating logged notes. The Notes panel always shows full note bodies. The backend returns timeline and action history chronologically; the Next.js incident detail page displays timeline and action history newest-first. The global `/report` endpoint remains read-only and does not write incident history. The incident detail page shows the playbook or suggested template, analyst notes, extracted observables, response actions, combined timeline, and action history.
 
 After pulling this code onto the `logger` VM, create or verify the new runtime tables:
 
@@ -129,7 +164,7 @@ print("Database tables created/verified.")
 PY
 ```
 
-Codex/code generation only updates repository code. It does not create real runtime SQLite tables or insert real rows on the `logger` VM.
+Codex/code generation only updates repository code. It does not create real runtime SQLite tables or insert real rows on the `logger` VM. Run the command above manually on the logger after pulling changes so `incident_observables` is created.
 
 ## Frontend
 
@@ -156,7 +191,7 @@ The current Next.js UI uses:
 - `/dashboard` as a metrics-only operations console with active, archived, stored, severity, and decision counts plus navigation shortcuts.
 - `/incidents` for active incident triage with metric cards, severity distribution, desktop side filter panel, search, filters, sorting, compact grid cards, approve/reject, archive, and detail links.
 - `/archive` for archived incidents with archive metrics, desktop side filter panel, search, filters, sorting, compact grid cards, unarchive, and detail links.
-- `/incidents/{id}` for read-only incident viewing until an analyst explicitly creates a manual playbook. Timeline and action history are presented newest-first in the UI.
+- `/incidents/{id}` for read-only incident viewing until an analyst explicitly creates a manual playbook. Timeline and action history are presented newest-first in the UI. Observables and response actions are shown on the same page, and high-risk AD disable requires typing `DISABLE_ACCOUNT` plus a reason before execute is enabled.
 - `/report` for the global AI-generated executive summary based on currently stored incidents.
 
 The frontend uses a neutral dark admin-console theme with restrained severity colors, compact cards, subtle CSS-only appearance animation, and `prefers-reduced-motion` support.

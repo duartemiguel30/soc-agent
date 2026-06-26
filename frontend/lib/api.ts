@@ -102,6 +102,39 @@ export type IncidentActionEvent = {
   created_at?: string | null;
 };
 
+export type IncidentObservable = {
+  id: number;
+  incident_id: string;
+  key: string;
+  value: string;
+  source?: string | null;
+  created_at?: string | null;
+};
+
+export type ResponseActionResult = {
+  ok?: boolean;
+  mode?: string;
+  target?: string;
+  command?: string;
+  message?: string;
+  needs_human_review?: boolean;
+  already_present?: boolean;
+  reason?: string | null;
+  [key: string]: unknown;
+};
+
+export type ResponseAction = {
+  key: string;
+  name: string;
+  description: string;
+  risk_level: "low" | "medium" | "high" | "critical" | string;
+  required_observables: string[];
+  available: boolean;
+  availability_reason: string;
+  needs_human_review?: boolean;
+  dry_run?: ResponseActionResult | null;
+};
+
 export type TimelineEvent = {
   timestamp?: string | null;
   source: "system" | "ai" | "analyst" | string;
@@ -255,4 +288,25 @@ export function getIncidentTimeline(id: string) {
 
 export function listIncidentActions(id: string) {
   return request<IncidentActionEvent[]>(`/incidents/${id}/actions`);
+}
+
+export function listIncidentObservables(id: string) {
+  return request<IncidentObservable[]>(`/incidents/${id}/observables`);
+}
+
+export function listIncidentResponseActions(id: string) {
+  return request<ResponseAction[]>(`/incidents/${id}/response-actions`);
+}
+
+export function dryRunResponseAction(id: string, actionKey: string) {
+  return request<ResponseActionResult>(`/incidents/${id}/response-actions/${actionKey}/dry-run`, {
+    method: "POST",
+  });
+}
+
+export function executeResponseAction(id: string, actionKey: string, body?: { confirm?: string; reason?: string }) {
+  return request<ResponseActionResult>(`/incidents/${id}/response-actions/${actionKey}/execute`, {
+    method: "POST",
+    body: JSON.stringify(body || {}),
+  });
 }
