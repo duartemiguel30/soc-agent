@@ -1271,6 +1271,350 @@ def get_incident_timeline(
     return sorted(timeline, key=lambda item: item["timestamp"])
 
 
+@app.get("/incidents/archive")
+def list_archived_incidents(db: Session = Depends(get_db), admin: dict = Depends(get_current_admin)):
+    """Return archived incidents with archive metadata."""
+    rows = (
+        db.query(Incident, IncidentArchiveState)
+        .join(IncidentArchiveState, IncidentArchiveState.incident_id == Incident.id)
+        .order_by(IncidentArchiveState.archived_at.desc())
+        .all()
+    )
+    return [serialize_incident(incident, archive_state) for incident, archive_state in rows]
+
+
+@app.get("/incidents/{incident_id}")
+def get_incident_detail(
+    incident_id: str,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    """Return a single incident with stored AI analysis fields."""
+    incident = get_incident_or_404(db, incident_id)
+    return serialize_incident(incident, get_archive_state(db, incident_id))
+
+
+@app.post("/incidents/{incident_id}/archive")
+def archive_incident(
+    incident_id: str,
+    payload: ArchiveRequest | None = None,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    """Archive an incident for dashboard/list visibility without changing its operational status."""
+    get_incident_or_404(db, incident_id)
+    actor = current_admin_username(admin)
+    archive_state = get_archive_state(db, incident_id)
+    if not archive_state:
+        archive_state = IncidentArchiveState(
+            incident_id=incident_id,
+            archived_at=utc_now(),
+            archived_by=actor,
+            reason=(payload.reason.strip() if payload and payload.reason else None),
+        )
+        db.add(archive_state)
+        log_action_event(
+            db,
+            incident_id,
+            actor,
+            "incident_archived",
+            "Incident archived for dashboard/list organization.",
+            {"reason": archive_state.reason} if archive_state.reason else None,
+        )
+        db.commit()
+        db.refresh(archive_state)
+    return {"incident_id": incident_id, "is_archived": True, "archive_state": serialize_archive_state(archive_state)}
+
+
+@app.post("/incidents/{incident_id}/unarchive")
+def unarchive_incident(
+    incident_id: str,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    """Remove archive state without changing incident operational status."""
+    get_incident_or_404(db, incident_id)
+    actor = current_admin_username(admin)
+    archive_state = get_archive_state(db, incident_id)
+    if archive_state:
+        db.delete(archive_state)
+        log_action_event(
+            db,
+            incident_id,
+            actor,
+            "incident_unarchived",
+            "Incident restored to active views.",
+        )
+        db.commit()
+    return {"incident_id": incident_id, "is_archived": False}
+
+
+@app.get("/incidents/{incident_id}/playbook")
+def get_incident_playbook(
+    incident_id: str,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    """Return an existing manual playbook or a suggested template without creating rows."""
+    incident = get_incident_or_404(db, incident_id)
+    playbook, steps = load_playbook(db, incident_id)
+    return {
+        "playbook": serialize_playbook(playbook, steps) if playbook else None,
+        "suggested_template": None if playbook else template_suggestion(incident),
+    }
+
+
+@app.post("/incidents/{incident_id}/playbook")
+def create_incident_playbook(
+    incident_id: str,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    """Create the deterministic manual response playbook when an analyst explicitly requests it."""
+    incident = get_incident_or_404(db, incident_id)
+    playbook, steps, created = get_or_create_playbook(db, incident, current_admin_username(admin))
+    return {"playbook": serialize_playbook(playbook, steps), "created": created}
+
+
+@app.patch("/playbook/steps/{step_id}")
+def update_playbook_step(
+    step_id: int,
+    payload: PlaybookStepUpdate,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    """Update a manual playbook checklist step status."""
+    accepted_statuses = {"todo", "in_progress", "done", "skipped"}
+    if payload.status not in accepted_statuses:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid step status",
+        )
+
+    step = db.query(IncidentPlaybookStep).filter(IncidentPlaybookStep.id == step_id).first()
+    if not step:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Playbook step not found")
+
+    playbook = db.query(IncidentPlaybook).filter(IncidentPlaybook.id == step.playbook_id).first()
+    if not playbook:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Playbook not found")
+
+    actor = current_admin_username(admin)
+    previous_status = step.status
+    step.status = payload.status
+    if payload.status == "done":
+        step.completed_at = utc_now()
+        step.completed_by = actor
+    elif payload.status in {"todo", "in_progress", "skipped"}:
+        step.completed_at = None
+        step.completed_by = None
+
+    update_playbook_status(db, step.playbook_id)
+    log_action_event(
+        db,
+        playbook.incident_id,
+        actor,
+        "playbook_step_updated",
+        f"Playbook step {step.step_order} changed from {previous_status} to {payload.status}: {step.title}",
+        {
+            "step_id": step.id,
+            "playbook_id": playbook.id,
+            "previous_status": previous_status,
+            "status": payload.status,
+        },
+    )
+    db.commit()
+    db.refresh(step)
+    return {
+        "id": step.id,
+        "playbook_id": step.playbook_id,
+        "step_order": step.step_order,
+        "title": step.title,
+        "description": step.description,
+        "status": step.status,
+        "is_required": step.is_required,
+        "completed_at": step.completed_at,
+        "completed_by": step.completed_by,
+        "created_at": step.created_at,
+        "updated_at": step.updated_at,
+    }
+
+
+@app.post("/incidents/{incident_id}/notes")
+def add_incident_note(
+    incident_id: str,
+    payload: NoteCreate,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    """Add an analyst note to an incident."""
+    get_incident_or_404(db, incident_id)
+    body = payload.body.strip()
+    if not body:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Note body is required")
+
+    actor = current_admin_username(admin)
+    note = IncidentNote(incident_id=incident_id, author=actor, body=body)
+    db.add(note)
+    db.flush()
+    log_action_event(
+        db,
+        incident_id,
+        actor,
+        "note_added",
+        "Analyst note added.",
+        {"note_id": note.id},
+    )
+    db.commit()
+    db.refresh(note)
+    return serialize_note(note)
+
+
+@app.get("/incidents/{incident_id}/notes")
+def list_incident_notes(
+    incident_id: str,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    """Return analyst notes oldest first for stable chronological reading."""
+    get_incident_or_404(db, incident_id)
+    notes = (
+        db.query(IncidentNote)
+        .filter(IncidentNote.incident_id == incident_id)
+        .order_by(IncidentNote.created_at.asc(), IncidentNote.id.asc())
+        .all()
+    )
+    return [serialize_note(note) for note in notes]
+
+
+@app.get("/incidents/{incident_id}/actions")
+def list_incident_actions(
+    incident_id: str,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    """Return historical action events oldest first."""
+    get_incident_or_404(db, incident_id)
+    events = (
+        db.query(IncidentActionEvent)
+        .filter(IncidentActionEvent.incident_id == incident_id)
+        .order_by(IncidentActionEvent.created_at.asc(), IncidentActionEvent.id.asc())
+        .all()
+    )
+    return [serialize_action_event(event) for event in events]
+
+
+@app.get("/incidents/{incident_id}/timeline")
+def get_incident_timeline(
+    incident_id: str,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    """Return chronological timeline events, using action events first.
+
+    Notes are represented by note_added action events. Synthetic entries are only
+    fallback records for old incidents that predate action-event logging.
+    """
+    incident = get_incident_or_404(db, incident_id)
+    events = (
+        db.query(IncidentActionEvent)
+        .filter(IncidentActionEvent.incident_id == incident_id)
+        .order_by(IncidentActionEvent.created_at.asc(), IncidentActionEvent.id.asc())
+        .all()
+    )
+    existing_event_types = {event.event_type for event in events}
+
+    timeline = [
+        {
+            "timestamp": event.created_at,
+            "source": action_event_source(event),
+            "event_type": event.event_type,
+            "actor": event.actor,
+            "message": event.message,
+            "metadata_json": event.metadata_json,
+        }
+        for event in events
+    ]
+
+    if "incident_created" not in existing_event_types:
+        timeline.append(
+            {
+                "timestamp": incident.created_at,
+                "source": "system",
+                "event_type": "incident_created",
+                "actor": "system",
+                "message": f"Incident created for rule {incident.rule_id or 'unknown'}.",
+            }
+        )
+
+    if (
+        "ai_analysis_completed" not in existing_event_types
+        and (incident.classification or incident.reasoning or incident.recommended_action)
+    ):
+        timeline.append(
+            {
+                "timestamp": incident.created_at,
+                "source": "ai",
+                "event_type": "ai_analysis_completed",
+                "actor": "system",
+                "message": "AI analysis fields are available for this incident.",
+            }
+        )
+
+    if "playbook_created" not in existing_event_types:
+        playbook = (
+            db.query(IncidentPlaybook)
+            .filter(IncidentPlaybook.incident_id == incident_id)
+            .order_by(IncidentPlaybook.created_at.asc())
+            .first()
+        )
+    else:
+        playbook = None
+    if playbook:
+        timeline.append(
+            {
+                "timestamp": playbook.created_at,
+                "source": "system",
+                "event_type": "playbook_created",
+                "actor": "system",
+                "message": f"Manual playbook available: {playbook.title}",
+            }
+        )
+
+    logged_note_ids = set()
+    for event in events:
+        if event.event_type != "note_added" or not event.metadata_json:
+            continue
+        try:
+            metadata = json.loads(event.metadata_json)
+        except json.JSONDecodeError:
+            continue
+        note_id = metadata.get("note_id")
+        if note_id is not None:
+            logged_note_ids.add(note_id)
+
+    notes_without_events = (
+        db.query(IncidentNote)
+        .filter(IncidentNote.incident_id == incident_id)
+        .order_by(IncidentNote.created_at.asc(), IncidentNote.id.asc())
+        .all()
+    )
+    for note in notes_without_events:
+        if note.id in logged_note_ids:
+            continue
+        timeline.append(
+            {
+                "timestamp": note.created_at,
+                "source": "analyst",
+                "event_type": "note_added",
+                "actor": note.author,
+                "message": note.body,
+            }
+        )
+
+    return sorted(timeline, key=lambda item: item["timestamp"])
+
+
 @app.post("/incidents/{incident_id}/approve")
 def approve_incident(
     incident_id: str,
