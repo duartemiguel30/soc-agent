@@ -135,9 +135,11 @@ export default function ReportPage() {
                 <p className="eyebrow">AI summary</p>
                 <h1>Report</h1>
               </div>
-              <button className="button primary" onClick={handleGenerate} disabled={loading}>
-                {loading ? "Generating..." : "Generate report"}
-              </button>
+              <div className="toolbar">
+                <button className="button primary" onClick={handleGenerate} disabled={loading}>
+                  {loading ? "Generating..." : "Generate report"}
+                </button>
+              </div>
             </div>
 
             <section className="panel report-scope">

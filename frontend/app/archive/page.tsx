@@ -98,12 +98,14 @@ export default function ArchivePage() {
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [lastUpdated, setLastUpdated] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     setError(null);
     try {
       setIncidents(await listArchivedIncidents());
+      setLastUpdated(new Date().toLocaleTimeString());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load archived incidents");
     } finally {
@@ -228,9 +230,12 @@ export default function ArchivePage() {
                 <p className="eyebrow">Lifecycle</p>
                 <h1>Archive</h1>
               </div>
-              <button className="button secondary" onClick={refresh} disabled={loading}>
-                {loading ? "Refreshing..." : "Refresh"}
-              </button>
+              <div className="toolbar">
+                {lastUpdated ? <span className="muted">Updated {lastUpdated}</span> : null}
+                <button className="button secondary" onClick={refresh} disabled={loading}>
+                  {loading ? "Refreshing..." : "Refresh"}
+                </button>
+              </div>
             </div>
 
             <section className="metric-grid compact-metrics" aria-label="Archive summary">

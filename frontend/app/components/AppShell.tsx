@@ -51,35 +51,35 @@ export function AppShell({ user, children }: AppShellProps) {
             aria-controls="primary-navigation"
             onClick={() => setMenuOpen((open) => !open)}
           >
-            <span />
-            <span />
-            <span />
-            Menu
+            <span className="hamburger" aria-hidden="true">
+              <span />
+              <span />
+              <span />
+            </span>
+            <span>Menu</span>
           </button>
 
-          <nav
-            className={menuOpen ? "nav-list open" : "nav-list"}
-            id="primary-navigation"
-            aria-label="Primary navigation"
-          >
-            {navItems.map((item) => (
-              <Link
-                key={item.href}
-                className={pathname === item.href ? "nav-link active" : "nav-link"}
-                href={item.href}
-                onClick={() => setMenuOpen(false)}
-              >
-                {item.label}
-              </Link>
-            ))}
-          </nav>
+          <div className={menuOpen ? "header-menu open" : "header-menu"} id="primary-navigation">
+            <nav className="nav-list" aria-label="Primary navigation">
+              {navItems.map((item) => (
+                <Link
+                  key={item.href}
+                  className={pathname === item.href ? "nav-link active" : "nav-link"}
+                  href={item.href}
+                  onClick={() => setMenuOpen(false)}
+                >
+                  {item.label}
+                </Link>
+              ))}
+            </nav>
 
-          <div className="session-card">
-            <span>Signed in</span>
-            <strong>{user.username}</strong>
-            <button className="button ghost" onClick={handleLogout} disabled={loggingOut}>
-              {loggingOut ? "Logging out..." : "Logout"}
-            </button>
+            <div className="session-card">
+              <span>Signed in</span>
+              <strong>{user.username}</strong>
+              <button className="button ghost" onClick={handleLogout} disabled={loggingOut}>
+                {loggingOut ? "Logging out..." : "Logout"}
+              </button>
+            </div>
           </div>
         </div>
       </header>

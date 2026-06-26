@@ -90,12 +90,14 @@ export default function IncidentsPage() {
   const [filtersOpen, setFiltersOpen] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [lastUpdated, setLastUpdated] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ type: "success" | "error"; message: string } | null>(null);
 
   const refresh = useCallback(async () => {
     setError(null);
     try {
       setIncidents(await listIncidents("false"));
+      setLastUpdated(new Date().toLocaleTimeString());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load incidents");
     } finally {
@@ -215,6 +217,7 @@ export default function IncidentsPage() {
                 <h1>Incidents</h1>
               </div>
               <div className="toolbar">
+                {lastUpdated ? <span className="muted">Updated {lastUpdated}</span> : null}
                 <button className="button secondary" onClick={refresh} disabled={loading}>
                   {loading ? "Refreshing..." : "Refresh"}
                 </button>

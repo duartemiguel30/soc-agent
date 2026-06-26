@@ -160,6 +160,10 @@ The current Next.js UI uses:
 - `/report` for the global AI-generated executive summary based on currently stored incidents.
 
 The frontend uses a neutral dark admin-console theme with restrained severity colors, compact cards, subtle CSS-only appearance animation, and `prefers-reduced-motion` support.
+Main pages use a subtle content entrance transition, while dashboard, incidents, and archive show refreshed timestamps after successful data loads.
+On narrow screens, the top header keeps the SOC AI Agent brand visible and moves navigation, signed-in user context, and logout into a clean menu panel.
+
+For presentations, run the full product demo manually because it depends on live VM, Wazuh, FastAPI, auth, and SQLite state. Automated browser regression coverage can be added later with Playwright or Cypress, but this repository does not add those frontend test dependencies yet.
 
 Open:
 
