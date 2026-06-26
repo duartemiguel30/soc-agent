@@ -16,8 +16,6 @@ AD_ACTIONS_ENABLED=false
 AD_ACTION_MODE=dry_run
 AD_DOMAIN=WINDOMAIN
 AD_DOMAIN_CONTROLLER=dc.windomain.local
-AD_USERNAME=
-AD_PASSWORD=
 AD_PROTECTED_USERS=Administrator,admin,krbtgt,vagrant,Domain Admins,Enterprise Admins,Schema Admins
 ```
 
@@ -119,7 +117,7 @@ High-risk AD disable execution requires this request body:
 
 AD username safety checks reject unsupported characters, machine accounts, and protected names such as `Administrator`, `admin`, `krbtgt`, `vagrant`, Domain Admins-like accounts, and any additional comma-separated names in `AD_PROTECTED_USERS`.
 
-Do not store AD credentials in Git. Keep `.env` local to the logger VM or lab host. Real AD execution should only be added and tested in a lab with explicit connectivity, credential handling, and rollback procedures.
+Real AD execution is future work. If it is implemented later, credential handling must be designed separately; do not store AD credentials in `.env.example`, do not hardcode AD credentials, and do not assume the current dry-run settings can perform real disable operations. Real execution should require explicit approval, lab testing, credential handling review, rollback procedure, and audit logging.
 
 ## Incident Archive
 

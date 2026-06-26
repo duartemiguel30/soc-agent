@@ -20,8 +20,6 @@ def response_action_config() -> dict:
         "ad_action_mode": os.getenv("AD_ACTION_MODE", "dry_run").strip().lower(),
         "ad_domain": os.getenv("AD_DOMAIN", "WINDOMAIN"),
         "ad_domain_controller": os.getenv("AD_DOMAIN_CONTROLLER", "dc.windomain.local"),
-        "ad_username": os.getenv("AD_USERNAME", ""),
-        "ad_password": os.getenv("AD_PASSWORD", ""),
         "ad_protected_users": [item.strip() for item in protected_users.split(",") if item.strip()],
     }
 
