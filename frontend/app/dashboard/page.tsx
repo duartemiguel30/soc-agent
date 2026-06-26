@@ -326,25 +326,15 @@ export default function DashboardPage() {
                 <VerticalBarChart data={chartData.eventEvolution} />
               </div>
 
-              <div className="chart-side-stack">
-                <div className="panel chart-panel chart-donut-panel">
-                  <div className="section-head">
-                    <h2>Severity Distribution</h2>
-                    <span>Weighted events</span>
-                  </div>
-                  <DonutChart data={chartData.severity} />
+              <div className="panel chart-panel chart-donut-panel chart-severity">
+                <div className="section-head">
+                  <h2>Severity Distribution</h2>
+                  <span>Weighted events</span>
                 </div>
-
-                <div className="panel chart-panel chart-donut-panel">
-                  <div className="section-head">
-                    <h2>Decision Distribution</h2>
-                    <span>Weighted events</span>
-                  </div>
-                  <DonutChart data={chartData.decisions} />
-                </div>
+                <DonutChart data={chartData.severity} />
               </div>
 
-              <div className="panel chart-panel chart-secondary">
+              <div className="panel chart-panel chart-secondary chart-mitre">
                 <div className="section-head">
                   <h2>MITRE ATT&CK Distribution</h2>
                   <span>Top techniques</span>
@@ -352,7 +342,15 @@ export default function DashboardPage() {
                 <HorizontalBarList data={chartData.mitre} />
               </div>
 
-              <div className="panel chart-panel chart-secondary">
+              <div className="panel chart-panel chart-donut-panel chart-decision">
+                <div className="section-head">
+                  <h2>Decision Distribution</h2>
+                  <span>Weighted events</span>
+                </div>
+                <DonutChart data={chartData.decisions} />
+              </div>
+
+              <div className="panel chart-panel chart-secondary chart-agents">
                 <div className="section-head">
                   <h2>Top Agents</h2>
                   <span>By event volume</span>

@@ -449,36 +449,6 @@ export default function IncidentDetailPage() {
                     ) : null}
                   </section>
 
-                  <section className="panel detail-alert-card">
-                    <div className="section-head">
-                      <h2>Alert Activity</h2>
-                      <span>{incidentEventCount(incident)}</span>
-                    </div>
-                    <div className="detail-list">
-                      <DetailRow label="Event count" value={incidentEventCount(incident)} />
-                      <DetailRow label="First seen" value={formatIncidentDate(incident.first_seen || incident.created_at)} />
-                      <DetailRow label="Last seen" value={formatIncidentDate(incident.last_seen || incident.created_at)} />
-                    </div>
-                    <div className="action-list" style={{ marginTop: 14 }}>
-                      {alertEvents.length ? (
-                        alertEvents.map((event) => (
-                          <article className="action-entry" key={event.id}>
-                            <span className="entry-meta">
-                              {formatIncidentDate(event.event_timestamp || event.created_at)} - Rule{" "}
-                              {event.rule_id || "unknown"} - {event.agent_name || "unknown agent"}
-                            </span>
-                            <p>{event.summary || "Correlated Wazuh alert event."}</p>
-                            <span className="entry-meta">
-                              Source IP: {event.src_ip || "N/A"} - User: {event.target_username || "N/A"}
-                            </span>
-                          </article>
-                        ))
-                      ) : (
-                        <div className="empty-state">No correlated alert events recorded for this incident.</div>
-                      )}
-                    </div>
-                  </section>
-
                   <section className="panel detail-ai-card">
                     <div className="section-head">
                       <h2>AI Analysis</h2>
@@ -540,7 +510,7 @@ export default function IncidentDetailPage() {
                         Add note
                       </button>
                     </form>
-                    <div className="notes-list" style={{ marginTop: 14 }}>
+                    <div className="notes-list detail-scroll-list notes-scroll" style={{ marginTop: 14 }}>
                       {notes.length ? (
                         notes.map((note) => (
                           <article className="note-card" key={note.id}>
@@ -571,7 +541,7 @@ export default function IncidentDetailPage() {
                       </div>
                       <span>{playbook ? labelValue(playbook.status) : "Not created"}</span>
                     </div>
-                    <div className="playbook-list">
+                    <div className="playbook-list detail-scroll-list playbook-scroll">
                       {playbook?.steps.length ? (
                         playbook.steps.map((step) => (
                           <article className="playbook-step" key={step.id}>
@@ -628,6 +598,36 @@ export default function IncidentDetailPage() {
                     </div>
                   </section>
 
+                  <section className="panel detail-alert-card">
+                    <div className="section-head">
+                      <h2>Alert Activity</h2>
+                      <span>{incidentEventCount(incident)}</span>
+                    </div>
+                    <div className="detail-list">
+                      <DetailRow label="Event count" value={incidentEventCount(incident)} />
+                      <DetailRow label="First seen" value={formatIncidentDate(incident.first_seen || incident.created_at)} />
+                      <DetailRow label="Last seen" value={formatIncidentDate(incident.last_seen || incident.created_at)} />
+                    </div>
+                    <div className="action-list detail-scroll-list alert-scroll" style={{ marginTop: 14 }}>
+                      {alertEvents.length ? (
+                        alertEvents.map((event) => (
+                          <article className="action-entry" key={event.id}>
+                            <span className="entry-meta">
+                              {formatIncidentDate(event.event_timestamp || event.created_at)} - Rule{" "}
+                              {event.rule_id || "unknown"} - {event.agent_name || "unknown agent"}
+                            </span>
+                            <p>{event.summary || "Correlated Wazuh alert event."}</p>
+                            <span className="entry-meta">
+                              Source IP: {event.src_ip || "N/A"} - User: {event.target_username || "N/A"}
+                            </span>
+                          </article>
+                        ))
+                      ) : (
+                        <div className="empty-state">No correlated alert events recorded for this incident.</div>
+                      )}
+                    </div>
+                  </section>
+
                   <section className="panel detail-timeline-card">
                     <div className="section-head">
                       <h2>Timeline</h2>
@@ -637,7 +637,7 @@ export default function IncidentDetailPage() {
                       Newest first. Incident creation is when Wazuh data was stored; playbook, note, archive, approve,
                       and reject dates are analyst action times.
                     </p>
-                    <div className="timeline-list">
+                    <div className="timeline-list detail-scroll-list timeline-scroll">
                       {timeline.length ? (
                         timeline.map((event, index) => (
                           <article className={`timeline-entry source-${event.source}`} key={`${event.event_type}-${index}`}>
@@ -660,7 +660,7 @@ export default function IncidentDetailPage() {
                       <span>{actions.length}</span>
                     </div>
                     <p className="section-subtitle">Newest first. These are raw incident-specific action events.</p>
-                    <div className="action-list">
+                    <div className="action-list detail-scroll-list history-scroll">
                       {actions.length ? (
                         actions.map((event) => (
                           <article className="action-entry" key={event.id}>

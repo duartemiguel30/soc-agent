@@ -149,31 +149,33 @@ export function AppShell({ user, children }: AppShellProps) {
               ))}
             </nav>
 
-            <button
-              className="theme-toggle desktop-theme-toggle"
-              type="button"
-              aria-label={theme === "light" ? "Switch to dark mode" : "Switch to light mode"}
-              onClick={toggleTheme}
-            >
-              {theme === "light" ? <MoonIcon /> : <SunIcon />}
-            </button>
-
-            <button
-              className="theme-toggle drawer-theme-toggle"
-              type="button"
-              aria-label={theme === "light" ? "Switch to dark mode" : "Switch to light mode"}
-              onClick={toggleTheme}
-            >
-              {theme === "light" ? <MoonIcon /> : <SunIcon />}
-              <span>{theme === "light" ? "Switch to dark mode" : "Switch to light mode"}</span>
-            </button>
-
-            <div className="session-card">
-              <span>Signed in</span>
-              <strong>{user.username}</strong>
-              <button className="button ghost" onClick={handleLogout} disabled={loggingOut}>
-                {loggingOut ? "Logging out..." : "Logout"}
+            <div className="header-actions">
+              <button
+                className="theme-toggle desktop-theme-toggle"
+                type="button"
+                aria-label={theme === "light" ? "Switch to dark mode" : "Switch to light mode"}
+                onClick={toggleTheme}
+              >
+                {theme === "light" ? <MoonIcon /> : <SunIcon />}
               </button>
+
+              <button
+                className="theme-toggle drawer-theme-toggle"
+                type="button"
+                aria-label={theme === "light" ? "Switch to dark mode" : "Switch to light mode"}
+                onClick={toggleTheme}
+              >
+                {theme === "light" ? <MoonIcon /> : <SunIcon />}
+                <span>{theme === "light" ? "Switch to dark mode" : "Switch to light mode"}</span>
+              </button>
+
+              <div className="session-card">
+                <span>Signed in</span>
+                <strong>{user.username}</strong>
+                <button className="button ghost" onClick={handleLogout} disabled={loggingOut}>
+                  {loggingOut ? "Logging out..." : "Logout"}
+                </button>
+              </div>
             </div>
           </div>
         </div>
