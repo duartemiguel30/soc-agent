@@ -22,8 +22,25 @@ export type Incident = {
   decision?: string | null;
   status?: string | null;
   created_at?: string | null;
+  event_count?: number;
+  first_seen?: string | null;
+  last_seen?: string | null;
+  correlation_key?: string | null;
   is_archived?: boolean;
   archive_state?: IncidentArchiveState | null;
+};
+
+export type IncidentAlertEvent = {
+  id: number;
+  incident_id: string;
+  correlation_key: string;
+  rule_id?: string | null;
+  agent_name?: string | null;
+  src_ip?: string | null;
+  target_username?: string | null;
+  event_timestamp?: string | null;
+  summary?: string | null;
+  created_at?: string | null;
 };
 
 export type IncidentArchiveState = {
@@ -295,6 +312,10 @@ export function listIncidentActions(id: string) {
 
 export function listIncidentObservables(id: string) {
   return request<IncidentObservable[]>(`/incidents/${id}/observables`);
+}
+
+export function listIncidentAlertEvents(id: string) {
+  return request<IncidentAlertEvent[]>(`/incidents/${id}/alert-events`);
 }
 
 export function listIncidentResponseActions(id: string) {

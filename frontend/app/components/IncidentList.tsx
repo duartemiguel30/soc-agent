@@ -4,6 +4,8 @@ import { archiveIncident, approveIncident, Incident, rejectIncident, unarchiveIn
 import {
   formatIncidentDate,
   getSeverity,
+  hasDistinctLastSeen,
+  incidentEventCount,
   isPendingIncident,
   labelValue,
   shortIncidentId,
@@ -85,6 +87,8 @@ export function IncidentList({
         const pending = isPendingIncident(incident);
         const severity = getSeverity(incident);
         const status = (incident.status || "").toLowerCase();
+        const eventCount = incidentEventCount(incident);
+        const showLastSeen = hasDistinctLastSeen(incident);
         const canArchive = showArchiveActions && !pending && ["approved", "rejected", "processed"].includes(status);
         return (
           <article key={incident.id} className="incident-card">
@@ -107,6 +111,7 @@ export function IncidentList({
                 </span>
                 <span className="badge">{labelValue(incident.status || "no status")}</span>
                 <span className="badge">{labelValue(incident.decision || "no decision")}</span>
+                {eventCount > 1 ? <span className="badge">{eventCount} events</span> : null}
               </div>
             </div>
 
@@ -128,13 +133,19 @@ export function IncidentList({
                 {typeof incident.confidence === "number" ? `${incident.confidence}%` : "N/A"}
               </span>
               <span>
-                <strong>Decision</strong>
-                {labelValue(incident.decision || "N/A")}
+                <strong>Events</strong>
+                {eventCount}
               </span>
               <span>
-                <strong>Created</strong>
-                {formatIncidentDate(incident.created_at)}
+                <strong>First seen</strong>
+                {formatIncidentDate(incident.first_seen || incident.created_at)}
               </span>
+              {showLastSeen ? (
+                <span>
+                  <strong>Last seen</strong>
+                  {formatIncidentDate(incident.last_seen)}
+                </span>
+              ) : null}
             </div>
 
             {!compact && detailed ? (

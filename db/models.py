@@ -35,6 +35,22 @@ class IncidentObservable(Base):
     created_at = Column(DateTime, default=func.now(), nullable=False)
 
 
+class IncidentAlertEvent(Base):
+    __tablename__ = "incident_alert_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    incident_id = Column(String, ForeignKey("incidents.id"), index=True, nullable=False)
+    correlation_key = Column(String, index=True, nullable=False)
+    alert_hash = Column(String, unique=True, nullable=False)
+    rule_id = Column(String, index=True, nullable=True)
+    agent_name = Column(String, index=True, nullable=True)
+    src_ip = Column(String, index=True, nullable=True)
+    target_username = Column(String, index=True, nullable=True)
+    event_timestamp = Column(DateTime, nullable=True)
+    summary = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+
+
 class AdminUser(Base):
     __tablename__ = "admin_users"
 

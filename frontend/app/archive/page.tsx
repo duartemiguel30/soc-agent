@@ -9,6 +9,8 @@ import {
   formatIncidentDate,
   getSeverity,
   getSeverityRank,
+  hasDistinctLastSeen,
+  incidentEventCount,
   incidentSearchText,
   isPendingIncident,
   isProcessedIncident,
@@ -79,6 +81,9 @@ function archiveSearchText(incident: Incident) {
     incident.archive_state?.archived_by,
     incident.archive_state?.reason,
     incident.archive_state?.archived_at,
+    incident.correlation_key,
+    incident.first_seen,
+    incident.last_seen,
   ]
     .filter(Boolean)
     .join(" ")
@@ -397,6 +402,9 @@ export default function ArchivePage() {
                             </span>
                             <span className="badge">{labelValue(incident.status)}</span>
                             <span className="badge">{labelValue(incident.decision)}</span>
+                            {incidentEventCount(incident) > 1 ? (
+                              <span className="badge">{incidentEventCount(incident)} events</span>
+                            ) : null}
                           </div>
                         </div>
 
@@ -414,17 +422,23 @@ export default function ArchivePage() {
                             {incident.archive_state?.archived_by || "unknown"}
                           </span>
                           <span>
-                            <strong>Created</strong>
-                            {formatIncidentDate(incident.created_at)}
+                            <strong>Events</strong>
+                            {incidentEventCount(incident)}
                           </span>
                           <span>
-                            <strong>Rule level</strong>
-                            {incident.rule_level ?? "N/A"}
+                            <strong>First seen</strong>
+                            {formatIncidentDate(incident.first_seen || incident.created_at)}
                           </span>
                           <span>
                             <strong>Confidence</strong>
                             {typeof incident.confidence === "number" ? `${incident.confidence}%` : "N/A"}
                           </span>
+                          {hasDistinctLastSeen(incident) ? (
+                            <span>
+                              <strong>Last seen</strong>
+                              {formatIncidentDate(incident.last_seen)}
+                            </span>
+                          ) : null}
                         </div>
 
                         {incident.archive_state?.reason ? (

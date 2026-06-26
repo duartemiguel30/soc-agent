@@ -1,9 +1,10 @@
 import json
 import logging
 import os
+import hashlib
 import secrets
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from agent.graph import build_graph
 from db.database import Base, engine, get_db
@@ -12,6 +13,7 @@ from db.models import (
     AdminUser,
     Incident,
     IncidentActionEvent,
+    IncidentAlertEvent,
     IncidentArchiveState,
     IncidentNote,
     IncidentObservable,
@@ -26,6 +28,8 @@ from pydantic import BaseModel
 from playbooks.service import get_or_create_playbook, load_playbook, log_action_event, template_suggestion
 from response_actions.service import describe_actions, dry_run_action, execute_action, list_observables
 from security import hash_session_token, verify_password
+from sqlalchemy import func, or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 logging.basicConfig(level=logging.INFO)
@@ -40,6 +44,7 @@ FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "http://192.168.56.105:3000")
 AUTH_COOKIE_NAME = os.getenv("AUTH_COOKIE_NAME", "soc_admin_session")
 AUTH_COOKIE_SECURE = os.getenv("AUTH_COOKIE_SECURE", "false").lower() in {"1", "true", "yes", "on"}
 SESSION_TTL_HOURS = int(os.getenv("SESSION_TTL_HOURS", "8"))
+INCIDENT_CORRELATION_WINDOW_MINUTES = int(os.getenv("INCIDENT_CORRELATION_WINDOW_MINUTES", "15"))
 
 app.add_middleware(
     CORSMiddleware,
@@ -133,7 +138,46 @@ def serialize_archive_state(archive_state: IncidentArchiveState | None) -> dict 
     }
 
 
-def serialize_incident(incident: Incident, archive_state: IncidentArchiveState | None = None) -> dict:
+def incident_event_stats(db: Session | None, incident: Incident) -> dict:
+    if not db:
+        return {
+            "event_count": 1,
+            "first_seen": incident.created_at,
+            "last_seen": incident.created_at,
+            "correlation_key": None,
+        }
+
+    rows = (
+        db.query(
+            func.count(IncidentAlertEvent.id),
+            func.min(func.coalesce(IncidentAlertEvent.event_timestamp, IncidentAlertEvent.created_at)),
+            func.max(func.coalesce(IncidentAlertEvent.event_timestamp, IncidentAlertEvent.created_at)),
+            func.min(IncidentAlertEvent.correlation_key),
+        )
+        .filter(IncidentAlertEvent.incident_id == incident.id)
+        .first()
+    )
+    event_count = int(rows[0] or 0) if rows else 0
+    if event_count < 1:
+        return {
+            "event_count": 1,
+            "first_seen": incident.created_at,
+            "last_seen": incident.created_at,
+            "correlation_key": None,
+        }
+    return {
+        "event_count": event_count,
+        "first_seen": rows[1] or incident.created_at,
+        "last_seen": rows[2] or incident.created_at,
+        "correlation_key": rows[3],
+    }
+
+
+def serialize_incident(
+    incident: Incident,
+    archive_state: IncidentArchiveState | None = None,
+    db: Session | None = None,
+) -> dict:
     data = {
         "id": incident.id,
         "agent_name": incident.agent_name,
@@ -150,9 +194,25 @@ def serialize_incident(incident: Incident, archive_state: IncidentArchiveState |
         "status": incident.status,
         "created_at": incident.created_at,
     }
+    data.update(incident_event_stats(db, incident))
     data["archive_state"] = serialize_archive_state(archive_state)
     data["is_archived"] = archive_state is not None
     return data
+
+
+def serialize_alert_event(event: IncidentAlertEvent) -> dict:
+    return {
+        "id": event.id,
+        "incident_id": event.incident_id,
+        "correlation_key": event.correlation_key,
+        "rule_id": event.rule_id,
+        "agent_name": event.agent_name,
+        "src_ip": event.src_ip,
+        "target_username": event.target_username,
+        "event_timestamp": event.event_timestamp,
+        "summary": event.summary,
+        "created_at": event.created_at,
+    }
 
 
 def get_archive_state(db: Session, incident_id: str) -> IncidentArchiveState | None:
@@ -299,6 +359,180 @@ def extract_wazuh_observables(alert: dict) -> list[tuple[str, str]]:
     return observables
 
 
+def parse_wazuh_timestamp(value) -> datetime | None:
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        if text.endswith("Z"):
+            text = f"{text[:-1]}+00:00"
+        parsed = datetime.fromisoformat(text)
+        if parsed.tzinfo:
+            return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+        return parsed
+    except ValueError:
+        logger.debug("Could not parse Wazuh timestamp: %s", value)
+        return None
+
+
+def normalize_correlation_value(value) -> str | None:
+    text = clean_observable_value(value)
+    if not text:
+        return None
+    return text.lower()
+
+
+def wazuh_alert_context(alert: dict) -> dict:
+    rule = alert.get("rule") if isinstance(alert.get("rule"), dict) else {}
+    agent = alert.get("agent") if isinstance(alert.get("agent"), dict) else {}
+    mitre = rule.get("mitre") if isinstance(rule.get("mitre"), dict) else {}
+    techniques = mitre.get("technique") if isinstance(mitre.get("technique"), list) else []
+    observables = dict(extract_wazuh_observables(alert))
+    agent_name = (
+        clean_observable_value(agent.get("name"))
+        or observables.get("agent_name")
+        or observables.get("host")
+    )
+    target_username = (
+        observables.get("target_username")
+        or observables.get("user")
+        or observables.get("subject_username")
+    )
+    return {
+        "rule_id": clean_observable_value(rule.get("id")),
+        "agent_name": agent_name,
+        "host": observables.get("host"),
+        "src_ip": observables.get("src_ip"),
+        "target_username": target_username,
+        "process_name": observables.get("process_name"),
+        "target_image": observables.get("target_image"),
+        "mitre_technique": clean_observable_value(techniques[0] if techniques else None),
+        "timestamp": parse_wazuh_timestamp(alert.get("timestamp")),
+        "summary": build_alert_summary(alert, rule, agent_name, target_username, observables),
+    }
+
+
+def build_alert_summary(
+    alert: dict,
+    rule: dict,
+    agent_name: str | None,
+    target_username: str | None,
+    observables: dict[str, str],
+) -> str:
+    description = clean_observable_value(rule.get("description")) or "Wazuh alert"
+    parts = [description]
+    if agent_name:
+        parts.append(f"agent={agent_name}")
+    if observables.get("src_ip"):
+        parts.append(f"src_ip={observables['src_ip']}")
+    if target_username:
+        parts.append(f"user={target_username}")
+    if observables.get("process_name") or observables.get("target_image"):
+        parts.append(f"process={observables.get('target_image') or observables.get('process_name')}")
+    return " | ".join(parts)[:500]
+
+
+def canonical_json(value) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def build_alert_hash(alert: dict) -> str:
+    hash_payload = {
+        "timestamp": alert.get("timestamp"),
+        "rule": alert.get("rule"),
+        "agent": alert.get("agent"),
+        "manager": alert.get("manager"),
+        "location": alert.get("location"),
+        "decoder": alert.get("decoder"),
+        "data": alert.get("data"),
+        "full_log": alert.get("full_log"),
+        "id": alert.get("id"),
+    }
+    return hashlib.sha256(canonical_json(hash_payload).encode("utf-8")).hexdigest()
+
+
+def build_correlation_key(context: dict) -> str:
+    rule_id = normalize_correlation_value(context.get("rule_id")) or "unknown_rule"
+    agent_name = normalize_correlation_value(context.get("agent_name") or context.get("host"))
+    src_ip = normalize_correlation_value(context.get("src_ip"))
+    target_username = normalize_correlation_value(context.get("target_username"))
+    process_name = normalize_correlation_value(context.get("target_image") or context.get("process_name"))
+    mitre_technique = normalize_correlation_value(context.get("mitre_technique"))
+
+    if rule_id == "100004":
+        if src_ip and target_username:
+            parts = ("rule", rule_id, "src", src_ip, "user", target_username)
+        elif src_ip:
+            parts = ("rule", rule_id, "src", src_ip)
+        elif agent_name:
+            parts = ("rule", rule_id, "agent", agent_name)
+        else:
+            parts = ("rule", rule_id)
+        return "|".join(parts)
+
+    if process_name and ("lsass" in process_name or mitre_technique):
+        parts = ["rule", rule_id]
+        if agent_name:
+            parts.extend(["agent", agent_name])
+        parts.extend(["process", process_name])
+        return "|".join(parts)
+
+    parts = ["rule", rule_id]
+    if agent_name:
+        parts.extend(["agent", agent_name])
+    if src_ip:
+        parts.extend(["src", src_ip])
+    if target_username:
+        parts.extend(["user", target_username])
+    if not agent_name and not src_ip and not target_username and mitre_technique:
+        parts.extend(["mitre", mitre_technique])
+    return "|".join(parts)
+
+
+def create_alert_event(
+    incident_id: str,
+    correlation_key: str,
+    alert_hash: str,
+    context: dict,
+) -> IncidentAlertEvent:
+    return IncidentAlertEvent(
+        incident_id=incident_id,
+        correlation_key=correlation_key,
+        alert_hash=alert_hash,
+        rule_id=clean_observable_value(context.get("rule_id")),
+        agent_name=clean_observable_value(context.get("agent_name") or context.get("host")),
+        src_ip=clean_observable_value(context.get("src_ip")),
+        target_username=clean_observable_value(context.get("target_username")),
+        event_timestamp=context.get("timestamp"),
+        summary=clean_observable_value(context.get("summary")),
+    )
+
+
+def find_recent_correlated_incident(db: Session, correlation_key: str) -> Incident | None:
+    cutoff = utc_now() - timedelta(minutes=INCIDENT_CORRELATION_WINDOW_MINUTES)
+    return (
+        db.query(Incident)
+        .join(IncidentAlertEvent, IncidentAlertEvent.incident_id == Incident.id)
+        .outerjoin(IncidentArchiveState, IncidentArchiveState.incident_id == Incident.id)
+        .filter(
+            IncidentAlertEvent.correlation_key == correlation_key,
+            IncidentArchiveState.id.is_(None),
+            or_(Incident.status.is_(None), ~Incident.status.in_(["approved", "rejected"])),
+            or_(
+                IncidentAlertEvent.event_timestamp >= cutoff,
+                IncidentAlertEvent.created_at >= cutoff,
+            ),
+        )
+        .order_by(
+            func.coalesce(IncidentAlertEvent.event_timestamp, IncidentAlertEvent.created_at).desc(),
+            Incident.created_at.desc(),
+        )
+        .first()
+    )
+
+
 def store_wazuh_observables(db: Session, incident_id: str, alert: dict) -> None:
     try:
         observables = extract_wazuh_observables(alert)
@@ -419,6 +653,68 @@ async def receive_alert(alert: dict, db: Session = Depends(get_db)):
     """Receive Wazuh alerts and process them through the LangGraph agent."""
     logger.info(f"Alert received: rule_id={alert.get('rule', {}).get('id')}")
 
+    context = None
+    alert_hash = None
+    correlation_key = None
+    try:
+        context = wazuh_alert_context(alert)
+        alert_hash = build_alert_hash(alert)
+        correlation_key = build_correlation_key(context)
+
+        duplicate_event = db.query(IncidentAlertEvent).filter(IncidentAlertEvent.alert_hash == alert_hash).first()
+        if duplicate_event:
+            incident = db.query(Incident).filter(Incident.id == duplicate_event.incident_id).first()
+            logger.info(
+                "Duplicate Wazuh alert ignored for incident %s correlation_key=%s",
+                duplicate_event.incident_id,
+                duplicate_event.correlation_key,
+            )
+            return {
+                "incident_id": duplicate_event.incident_id,
+                "duplicate": True,
+                "correlated": True,
+                "event_count": incident_event_stats(db, incident)["event_count"] if incident else None,
+            }
+
+        correlated_incident = find_recent_correlated_incident(db, correlation_key)
+        if correlated_incident:
+            db.add(create_alert_event(correlated_incident.id, correlation_key, alert_hash, context))
+            store_wazuh_observables(db, correlated_incident.id, alert)
+            try:
+                db.commit()
+            except IntegrityError:
+                db.rollback()
+                existing = db.query(IncidentAlertEvent).filter(IncidentAlertEvent.alert_hash == alert_hash).first()
+                if existing:
+                    return {
+                        "incident_id": existing.incident_id,
+                        "duplicate": True,
+                        "correlated": True,
+                        "event_count": incident_event_stats(db, correlated_incident)["event_count"],
+                    }
+                raise
+            db.refresh(correlated_incident)
+            stats = incident_event_stats(db, correlated_incident)
+            logger.info(
+                "Wazuh alert correlated into incident %s correlation_key=%s event_count=%s",
+                correlated_incident.id,
+                correlation_key,
+                stats["event_count"],
+            )
+            return {
+                "incident_id": correlated_incident.id,
+                "classification": correlated_incident.classification,
+                "confidence": correlated_incident.confidence,
+                "severity": correlated_incident.severity,
+                "decision": correlated_incident.decision,
+                "correlated": True,
+                "duplicate": False,
+                "event_count": stats["event_count"],
+            }
+    except Exception as exc:
+        db.rollback()
+        logger.warning("Alert correlation failed; creating a new incident instead: %s", exc)
+
     initial_state = {
         "raw_alert": alert,
         "agent_name": "",
@@ -457,6 +753,8 @@ async def receive_alert(alert: dict, db: Session = Depends(get_db)):
     )
     db.add(incident)
     store_wazuh_observables(db, incident_id, alert)
+    if context and alert_hash and correlation_key:
+        db.add(create_alert_event(incident_id, correlation_key, alert_hash, context))
     log_action_event(
         db,
         incident_id,
@@ -477,7 +775,20 @@ async def receive_alert(alert: dict, db: Session = Depends(get_db)):
             "decision": result.get("decision"),
         },
     )
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        if alert_hash:
+            existing = db.query(IncidentAlertEvent).filter(IncidentAlertEvent.alert_hash == alert_hash).first()
+            if existing:
+                logger.info("Wazuh alert was already stored during new-incident commit: %s", existing.incident_id)
+                return {
+                    "incident_id": existing.incident_id,
+                    "duplicate": True,
+                    "correlated": True,
+                }
+        raise
 
     logger.info(
         f"Incident {incident_id} saved - decision={result.get('decision')} "
@@ -492,6 +803,9 @@ async def receive_alert(alert: dict, db: Session = Depends(get_db)):
         "decision": result.get("decision"),
         "reasoning": result.get("reasoning"),
         "recommended_action": result.get("recommended_action"),
+        "correlated": False,
+        "duplicate": False,
+        "event_count": 1,
     }
 
 
@@ -505,17 +819,18 @@ def list_incidents(
     incidents = incident_query_with_archive_filter(db, archived).order_by(Incident.created_at.desc()).all()
     if archived.lower() == "all":
         archive_states = {state.incident_id: state for state in db.query(IncidentArchiveState).all()}
-        return [serialize_incident(incident, archive_states.get(incident.id)) for incident in incidents]
+        return [serialize_incident(incident, archive_states.get(incident.id), db) for incident in incidents]
     if archived.lower() == "true":
         archive_states = {state.incident_id: state for state in db.query(IncidentArchiveState).all()}
-        return [serialize_incident(incident, archive_states.get(incident.id)) for incident in incidents]
-    return [serialize_incident(incident) for incident in incidents]
+        return [serialize_incident(incident, archive_states.get(incident.id), db) for incident in incidents]
+    return [serialize_incident(incident, db=db) for incident in incidents]
 
 
 @app.get("/incidents/pending")
 def list_pending(db: Session = Depends(get_db), admin: dict = Depends(get_current_admin)):
     """List incidents awaiting human review."""
-    return db.query(Incident).filter(Incident.status == "pending_human").all()
+    incidents = db.query(Incident).filter(Incident.status == "pending_human").all()
+    return [serialize_incident(incident, get_archive_state(db, incident.id), db) for incident in incidents]
 
 
 @app.get("/incidents/archive")
@@ -527,7 +842,7 @@ def list_archived_incidents(db: Session = Depends(get_db), admin: dict = Depends
         .order_by(IncidentArchiveState.archived_at.desc())
         .all()
     )
-    return [serialize_incident(incident, archive_state) for incident, archive_state in rows]
+    return [serialize_incident(incident, archive_state, db) for incident, archive_state in rows]
 
 
 @app.get("/incidents/{incident_id}")
@@ -538,7 +853,27 @@ def get_incident_detail(
 ):
     """Return a single incident with stored AI analysis fields."""
     incident = get_incident_or_404(db, incident_id)
-    return serialize_incident(incident, get_archive_state(db, incident_id))
+    return serialize_incident(incident, get_archive_state(db, incident_id), db)
+
+
+@app.get("/incidents/{incident_id}/alert-events")
+def get_incident_alert_events(
+    incident_id: str,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    """Return compact correlated Wazuh alert events for an incident."""
+    get_incident_or_404(db, incident_id)
+    events = (
+        db.query(IncidentAlertEvent)
+        .filter(IncidentAlertEvent.incident_id == incident_id)
+        .order_by(
+            func.coalesce(IncidentAlertEvent.event_timestamp, IncidentAlertEvent.created_at).asc(),
+            IncidentAlertEvent.id.asc(),
+        )
+        .all()
+    )
+    return [serialize_alert_event(event) for event in events]
 
 
 @app.get("/incidents/{incident_id}/observables")

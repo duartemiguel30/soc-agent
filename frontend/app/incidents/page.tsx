@@ -8,6 +8,7 @@ import { Incident, listIncidents } from "@/lib/api";
 import {
   getSeverity,
   getSeverityRank,
+  incidentLastSeenTime,
   incidentSearchText,
   isCriticalDecisionIncident,
   isPendingIncident,
@@ -69,8 +70,7 @@ type LevelFilter = (typeof levelOptions)[number]["value"];
 type SortKey = (typeof sortOptions)[number]["value"];
 
 function incidentTime(incident: Incident) {
-  const time = new Date(incident.created_at || "").getTime();
-  return Number.isNaN(time) ? 0 : time;
+  return incidentLastSeenTime(incident);
 }
 
 function compareText(a?: string | null, b?: string | null) {

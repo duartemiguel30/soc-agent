@@ -8,10 +8,11 @@ The backend is FastAPI with SQLite persistence. The primary admin UI is the Next
 
 - Public Wazuh webhook ingestion at `POST /webhook/wazuh`.
 - Gemini/LangGraph alert enrichment and classification.
-- SQLite-backed incidents, admin users, admin sessions, notes, archive state, manual playbooks, action history, and observables.
+- SQLite-backed incidents, correlated alert events, admin users, admin sessions, notes, archive state, manual playbooks, action history, and observables.
 - Admin authentication with opaque HttpOnly session cookies.
 - Next.js admin console for dashboard, incidents, archive, incident detail, notes, playbooks, response actions, and report generation.
 - Additive incident observables extracted from Wazuh/Sysmon payloads.
+- Alert correlation/deduplication groups repeated Wazuh alerts into one incident with event count, first seen, and last seen metadata.
 - Analyst-controlled response actions:
   - `block_source_ip`
   - `disable_ad_account` in disabled/dry-run-only mode
@@ -44,6 +45,7 @@ AUTH_COOKIE_NAME=soc_admin_session
 AUTH_COOKIE_SECURE=false
 FRONTEND_ORIGIN=http://192.168.56.105:3000
 SESSION_TTL_HOURS=8
+INCIDENT_CORRELATION_WINDOW_MINUTES=15
 
 RESPONSE_ACTIONS_ENABLED=true
 AD_ACTIONS_ENABLED=false
@@ -54,6 +56,8 @@ AD_PROTECTED_USERS=Administrator,admin,krbtgt,vagrant,Domain Admins,Enterprise A
 ```
 
 `AUTH_COOKIE_SECURE=false` is for local HTTP lab use. Set it to `true` behind HTTPS.
+
+`INCIDENT_CORRELATION_WINDOW_MINUTES` controls how long repeated related Wazuh alerts are grouped into an existing active incident. The default is 15 minutes.
 
 `AD_DOMAIN` and `AD_DOMAIN_CONTROLLER` are lab/runtime labels used in dry-run output. They are not credentials. Do not add AD credential placeholders to `.env.example`, and do not hardcode AD credentials.
 
@@ -144,6 +148,25 @@ Extraction is defensive: missing fields are ignored, empty values are not stored
 
 In the incident detail UI, observables are shown as concrete alert values that response actions can use. They help explain why an action is available, suggested, or unavailable.
 
+## Alert Correlation And Deduplication
+
+Wazuh ingestion stores alert occurrences in the additive `incident_alert_events` table. Repeated alerts that share a deterministic correlation key within the configured window are appended to the existing active, non-archived incident instead of creating duplicate incidents.
+
+Exact duplicate Wazuh payloads are ignored using a SHA256 alert hash. Correlated repeated alerts do not call Gemini/LangGraph again; Gemini is called only when a new incident must be created.
+
+Correlation is deterministic and does not use AI reasoning or recommended actions. It uses normalized Wazuh fields such as rule ID, agent/host, source IP, target username, MITRE technique, and process image where available. Brute-force rule `100004` prefers rule ID plus source IP and target username, then falls back to source IP or agent. Process-style alerts prefer rule ID, agent, and process image when present.
+
+Incident API responses include:
+
+- `event_count`
+- `first_seen`
+- `last_seen`
+- `correlation_key`
+
+Older incidents with no alert-event rows report `event_count=1`, with `first_seen` and `last_seen` falling back to `created_at`.
+
+When a correlated alert provides additional observables, ingestion merges them into the same incident using the existing unique observable constraint. This can make response actions available later, but webhook ingestion still does not execute response actions.
+
 ## Response Actions
 
 Response actions appear on `/incidents/{id}` in the Next.js UI and are available through protected backend endpoints. The UI separates them by context:
@@ -219,6 +242,7 @@ Incident, report, and response routes require admin session authentication:
 - `GET /incidents/pending`
 - `GET /incidents/archive`
 - `GET /incidents/{id}`
+- `GET /incidents/{id}/alert-events`
 - `GET /incidents/{id}/observables`
 - `GET /incidents/{id}/response-actions`
 - `POST /incidents/{id}/response-actions/{action_key}/dry-run`
@@ -273,8 +297,8 @@ Current UI pages:
 
 - `/dashboard`: operational metrics and navigation shortcuts.
 - `/incidents`: active incident triage, filtering, approve/reject, archive, and detail links.
-- `/archive`: archived incident search, filtering, and unarchive.
-- `/incidents/{id}`: read-only incident fields plus observables, response actions, manual playbook, notes, timeline, and action history.
+- `/archive`: archived incident search, filtering, event aggregation metadata, and unarchive.
+- `/incidents/{id}`: read-only incident fields plus alert activity, observables, response actions, manual playbook, notes, timeline, and action history.
 - `/report`: global executive report generated from stored incidents.
 
 The frontend uses FastAPI's HttpOnly cookie through `/backend/*`. It does not store auth tokens in `localStorage` or `sessionStorage`.
@@ -291,6 +315,14 @@ npm run lint
 ```
 
 For demos, run the full product manually because behavior depends on the live VM, Wazuh, FastAPI, Gemini configuration, auth state, and SQLite data.
+
+Manual correlation checks on the logger VM:
+
+- Send repeated brute-force alerts with the same rule/source/user inside `INCIDENT_CORRELATION_WINDOW_MINUTES`; one incident should show `event_count > 1`.
+- Re-send the exact same payload; the webhook should report it as a duplicate and not add another alert event.
+- Send the same pattern outside the window; a new incident should be created.
+- Archive an incident, then send the same pattern again; the archived incident should not receive new events.
+- Confirm no response action executes from `POST /webhook/wazuh`.
 
 ## Security Checklist
 

@@ -56,6 +56,25 @@ export function formatIncidentDate(value?: string | null) {
   return date.toLocaleString();
 }
 
+export function incidentEventCount(incident: Incident) {
+  return Math.max(1, incident.event_count ?? 1);
+}
+
+export function incidentLastSeenTime(incident: Incident) {
+  const value = incident.last_seen || incident.created_at;
+  const time = new Date(value || "").getTime();
+  return Number.isNaN(time) ? 0 : time;
+}
+
+export function hasDistinctLastSeen(incident: Incident) {
+  if (!incident.last_seen) {
+    return false;
+  }
+  const first = new Date(incident.first_seen || incident.created_at || "").getTime();
+  const last = new Date(incident.last_seen).getTime();
+  return !Number.isNaN(first) && !Number.isNaN(last) && Math.abs(last - first) > 1000;
+}
+
 export function incidentSearchText(incident: Incident) {
   return [
     incident.rule_description,
@@ -68,6 +87,9 @@ export function incidentSearchText(incident: Incident) {
     incident.status,
     incident.severity,
     incident.decision,
+    incident.correlation_key,
+    incident.first_seen,
+    incident.last_seen,
   ]
     .filter(Boolean)
     .join(" ")

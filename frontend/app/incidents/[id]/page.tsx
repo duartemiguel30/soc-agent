@@ -17,9 +17,11 @@ import {
   getIncidentTimeline,
   Incident,
   IncidentActionEvent,
+  IncidentAlertEvent,
   IncidentNote,
   IncidentObservable,
   IncidentPlaybook,
+  listIncidentAlertEvents,
   listIncidentObservables,
   listIncidentActions,
   listIncidentNotes,
@@ -36,6 +38,7 @@ import {
 import {
   formatIncidentDate,
   getSeverity,
+  incidentEventCount,
   isPendingIncident,
   labelValue,
   shortIncidentId,
@@ -89,6 +92,7 @@ export default function IncidentDetailPage() {
   const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
   const [actions, setActions] = useState<IncidentActionEvent[]>([]);
   const [observables, setObservables] = useState<IncidentObservable[]>([]);
+  const [alertEvents, setAlertEvents] = useState<IncidentAlertEvent[]>([]);
   const [responseActions, setResponseActions] = useState<ResponseAction[]>([]);
   const [responseActionResults, setResponseActionResults] = useState<Record<string, ResponseActionResult>>({});
   const [responseActionReasons, setResponseActionReasons] = useState<Record<string, string>>({});
@@ -106,11 +110,19 @@ export default function IncidentDetailPage() {
         getIncident(incidentId),
         getIncidentPlaybook(incidentId),
       ]);
-      const [notesData, timelineData, actionsData, observablesData, responseActionsData] = await Promise.all([
+      const [
+        notesData,
+        timelineData,
+        actionsData,
+        observablesData,
+        alertEventsData,
+        responseActionsData,
+      ] = await Promise.all([
         listIncidentNotes(incidentId),
         getIncidentTimeline(incidentId),
         listIncidentActions(incidentId),
         listIncidentObservables(incidentId),
+        listIncidentAlertEvents(incidentId),
         listIncidentResponseActions(incidentId),
       ]);
       setIncident(incidentData);
@@ -120,6 +132,7 @@ export default function IncidentDetailPage() {
       setTimeline([...timelineData].sort((a, b) => dateTime(b.timestamp) - dateTime(a.timestamp)));
       setActions([...actionsData].sort((a, b) => dateTime(b.created_at) - dateTime(a.created_at)));
       setObservables(observablesData);
+      setAlertEvents([...alertEventsData].sort((a, b) => dateTime(b.event_timestamp || b.created_at) - dateTime(a.event_timestamp || a.created_at)));
       setResponseActions(responseActionsData);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load incident detail");
@@ -394,7 +407,10 @@ export default function IncidentDetailPage() {
                       <DetailRow label="Agent" value={incident.agent_name} />
                       <DetailRow label="Rule ID" value={incident.rule_id} />
                       <DetailRow label="Rule level" value={incident.rule_level} />
-                      <DetailRow label="Created" value={formatIncidentDate(incident.created_at)} />
+                      <DetailRow label="Event count" value={incidentEventCount(incident)} />
+                      <DetailRow label="First seen" value={formatIncidentDate(incident.first_seen || incident.created_at)} />
+                      <DetailRow label="Last seen" value={formatIncidentDate(incident.last_seen || incident.created_at)} />
+                      <DetailRow label="Correlation key" value={incident.correlation_key} />
                       <DetailRow
                         label="Archive state"
                         value={
@@ -431,6 +447,36 @@ export default function IncidentDetailPage() {
                         Archive reason: {incident.archive_state.reason}
                       </p>
                     ) : null}
+                  </section>
+
+                  <section className="panel">
+                    <div className="section-head">
+                      <h2>Alert Activity</h2>
+                      <span>{incidentEventCount(incident)}</span>
+                    </div>
+                    <div className="detail-list">
+                      <DetailRow label="Event count" value={incidentEventCount(incident)} />
+                      <DetailRow label="First seen" value={formatIncidentDate(incident.first_seen || incident.created_at)} />
+                      <DetailRow label="Last seen" value={formatIncidentDate(incident.last_seen || incident.created_at)} />
+                    </div>
+                    <div className="action-list" style={{ marginTop: 14 }}>
+                      {alertEvents.length ? (
+                        alertEvents.map((event) => (
+                          <article className="action-entry" key={event.id}>
+                            <span className="entry-meta">
+                              {formatIncidentDate(event.event_timestamp || event.created_at)} - Rule{" "}
+                              {event.rule_id || "unknown"} - {event.agent_name || "unknown agent"}
+                            </span>
+                            <p>{event.summary || "Correlated Wazuh alert event."}</p>
+                            <span className="entry-meta">
+                              Source IP: {event.src_ip || "N/A"} - User: {event.target_username || "N/A"}
+                            </span>
+                          </article>
+                        ))
+                      ) : (
+                        <div className="empty-state">No correlated alert events recorded for this incident.</div>
+                      )}
+                    </div>
                   </section>
 
                   <section className="panel">
