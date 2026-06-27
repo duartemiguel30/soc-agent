@@ -2,11 +2,13 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppShell } from "@/app/components/AppShell";
 import { AuthGuard } from "@/app/components/AuthGuard";
-import { AlertPeriodResponse, getAlertPeriod } from "@/lib/api";
+import { AlertPeriodItem, AlertPeriodResponse, getAlertPeriod } from "@/lib/api";
 import { formatIncidentDate, getSeverity, labelValue, shortIncidentId } from "@/lib/incidents";
+
+const PAGE_SIZE = 25;
 
 function formatPeriodTitle(bucket: string | null, start: string | null, end: string | null) {
   const startDate = start ? new Date(start) : null;
@@ -32,36 +34,115 @@ function formatPeriodTitle(bucket: string | null, start: string | null, end: str
   return "Alert Period";
 }
 
+function alertItemKey(item: AlertPeriodItem) {
+  if (item.event?.id != null) {
+    return `event-${item.event.id}`;
+  }
+  return `fallback-${item.incident.id}-${item.timestamp || "unknown"}`;
+}
+
+function mergeUniqueAlertItems(existing: AlertPeriodItem[], incoming: AlertPeriodItem[]) {
+  const seen = new Set(existing.map(alertItemKey));
+  const unique = incoming.filter((item) => {
+    const key = alertItemKey(item);
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+  return [...existing, ...unique];
+}
+
 function AlertPeriodContent() {
   const searchParams = useSearchParams();
   const bucket = searchParams.get("bucket");
   const start = searchParams.get("start");
   const end = searchParams.get("end");
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const requestIdRef = useRef(0);
+  const loadingMoreRef = useRef(false);
   const [period, setPeriod] = useState<AlertPeriodResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
+  const [nextOffset, setNextOffset] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
-  const loadPeriod = useCallback(async () => {
+  const loadPeriodPage = useCallback(async (offset: number, replace: boolean) => {
+    if (!replace && loadingMoreRef.current) {
+      return;
+    }
+    const requestId = ++requestIdRef.current;
+    loadingMoreRef.current = true;
     setError(null);
-    setLoading(true);
+    if (replace) {
+      setLoading(true);
+    } else {
+      setLoadingMore(true);
+    }
     try {
       if (!start || !end) {
         throw new Error("Missing alert period range.");
       }
-      setPeriod(await getAlertPeriod({ from: start, to: end, archived: "all" }));
+      const page = await getAlertPeriod({
+        from: start,
+        to: end,
+        archived: "all",
+        limit: PAGE_SIZE,
+        offset,
+      });
+      if (requestId !== requestIdRef.current) {
+        return;
+      }
+      setPeriod((current) => ({
+        ...page,
+        items: replace ? page.items : mergeUniqueAlertItems(current?.items || [], page.items),
+      }));
+      setHasMore(page.has_more);
+      setNextOffset(page.offset + page.items.length);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not load alert period");
+      if (requestId === requestIdRef.current) {
+        setError(err instanceof Error ? err.message : "Could not load alert period");
+      }
     } finally {
-      setLoading(false);
+      if (requestId === requestIdRef.current) {
+        setLoading(false);
+        setLoadingMore(false);
+        loadingMoreRef.current = false;
+      }
     }
   }, [end, start]);
 
   useEffect(() => {
-    const initialLoad = window.setTimeout(loadPeriod, 0);
+    const initialLoad = window.setTimeout(() => {
+      setPeriod(null);
+      setHasMore(false);
+      setNextOffset(0);
+      void loadPeriodPage(0, true);
+    }, 0);
     return () => window.clearTimeout(initialLoad);
-  }, [loadPeriod]);
+  }, [loadPeriodPage]);
+
+  useEffect(() => {
+    const sentinel = sentinelRef.current;
+    if (!sentinel) {
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting) && hasMore && !loading && !loadingMore) {
+          void loadPeriodPage(nextOffset, false);
+        }
+      },
+      { rootMargin: "600px 0px" },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [hasMore, loadPeriodPage, loading, loadingMore, nextOffset]);
 
   const title = useMemo(() => formatPeriodTitle(bucket, start, end), [bucket, end, start]);
+  const loadedCount = period?.items.length ?? 0;
 
   return (
     <AuthGuard>
@@ -96,41 +177,53 @@ function AlertPeriodContent() {
                 <h2>Matching Alerts</h2>
                 <span>{start && end ? `${formatIncidentDate(start)} - ${formatIncidentDate(end)}` : "Selected period"}</span>
               </div>
+              <div className="alert-period-progress">
+                Showing {loadedCount} of {period?.total ?? 0} alerts
+              </div>
 
-              {loading ? (
+              {loading && !period ? (
                 <div className="loading-panel">Loading alert period...</div>
               ) : period?.items.length ? (
-                <div className="detail-list">
-                  {period.items.map((item, index) => {
-                    const severity = getSeverity(item.incident);
-                    return (
-                      <Link
-                        className="detail-row alert-drilldown-card"
-                        href={`/incidents/${item.incident.id}`}
-                        key={`${item.incident.id}-${item.event?.id || index}`}
-                      >
-                        <div className="alert-drilldown-card-head">
-                          <div className="alert-drilldown-card-title">
-                            <span>{formatIncidentDate(item.timestamp)}</span>
-                            <strong>
-                              #{shortIncidentId(item.incident.id)} -{" "}
-                              {item.event?.summary || item.incident.rule_description || "Stored incident"}
-                            </strong>
+                <>
+                  <div className="detail-list">
+                    {period.items.map((item) => {
+                      const severity = getSeverity(item.incident);
+                      return (
+                        <Link
+                          className="detail-row alert-drilldown-card"
+                          href={`/incidents/${item.incident.id}`}
+                          key={alertItemKey(item)}
+                        >
+                          <div className="alert-drilldown-card-head">
+                            <div className="alert-drilldown-card-title">
+                              <span>{formatIncidentDate(item.timestamp)}</span>
+                              <strong>
+                                #{shortIncidentId(item.incident.id)} -{" "}
+                                {item.event?.summary || item.incident.rule_description || "Stored incident"}
+                              </strong>
+                            </div>
+                            <div className="alert-drilldown-badges" aria-label="Alert classification">
+                              {item.incident.mitre_technique ? (
+                                <span className="badge attack-type">{item.incident.mitre_technique}</span>
+                              ) : null}
+                              <span className={`badge severity-${severity}`}>{labelValue(severity)}</span>
+                            </div>
                           </div>
-                          <div className="alert-drilldown-badges" aria-label="Alert classification">
-                            {item.incident.mitre_technique ? (
-                              <span className="badge attack-type">{item.incident.mitre_technique}</span>
-                            ) : null}
-                            <span className={`badge severity-${severity}`}>{labelValue(severity)}</span>
-                          </div>
-                        </div>
-                        <p>
-                          {labelValue(item.incident.decision)} / {item.incident.agent_name || "Unknown agent"}
-                        </p>
-                      </Link>
-                    );
-                  })}
-                </div>
+                          <p>
+                            {labelValue(item.incident.decision)} / {item.incident.agent_name || "Unknown agent"}
+                          </p>
+                        </Link>
+                      );
+                    })}
+                  </div>
+                  <div className="pagination-sentinel" ref={sentinelRef}>
+                    {loadingMore
+                      ? "Loading more alerts..."
+                      : hasMore
+                        ? "Scroll to load more alerts"
+                        : "All matching alerts loaded"}
+                  </div>
+                </>
               ) : (
                 <div className="empty-state">No alert events match this period.</div>
               )}

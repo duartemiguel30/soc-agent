@@ -1443,6 +1443,8 @@ def get_alert_period(
     from_: str = Query(..., alias="from"),
     to: str = Query(...),
     archived: str = "all",
+    limit: int | None = Query(None, ge=1, le=100),
+    offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     admin: dict = Depends(get_current_admin),
 ):
@@ -1499,13 +1501,25 @@ def get_alert_period(
                 }
             )
 
-    rows.sort(key=lambda item: item["timestamp"] or datetime.min, reverse=True)
+    rows.sort(
+        key=lambda item: (
+            item["timestamp"] or datetime.min,
+            item["event"]["id"] if item.get("event") else 0,
+            item["incident"]["id"],
+        ),
+        reverse=True,
+    )
+    total = len(rows)
+    paged_rows = rows[offset : offset + limit] if limit is not None else rows
     return {
         "from": start,
         "to": end,
         "archived": normalized,
-        "total": len(rows),
-        "items": rows,
+        "total": total,
+        "limit": limit or total,
+        "offset": offset if limit is not None else 0,
+        "has_more": bool(limit is not None and offset + limit < total),
+        "items": paged_rows,
     }
 
 

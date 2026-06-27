@@ -11,6 +11,8 @@ import {
   getAlertEvolution,
 } from "@/lib/api";
 
+type TimelineTransitionDirection = "previous" | "next" | "neutral";
+
 const rangeOptions: { value: AlertEvolutionRange; label: string }[] = [
   { value: "24h", label: "24h" },
   { value: "7d", label: "7d" },
@@ -164,6 +166,8 @@ function TimelineBarChart({
   interactive,
   mode,
   anchored,
+  transitionDirection,
+  transitionKey,
 }: {
   data: AlertEvolutionPoint[];
   loading: boolean;
@@ -172,6 +176,8 @@ function TimelineBarChart({
   interactive: boolean;
   mode: "compact" | "full";
   anchored: boolean;
+  transitionDirection: TimelineTransitionDirection;
+  transitionKey: string;
 }) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const max = Math.max(...data.map((item) => item.count), 1);
@@ -230,8 +236,15 @@ function TimelineBarChart({
 
   if (mode === "full") {
     return (
-      <div className={loading ? "timeline-grid-full chart-updating" : "timeline-grid-full"} role="list">
-        {columns}
+      <div className={loading ? "timeline-chart-shell chart-updating" : "timeline-chart-shell"}>
+        <div
+          className={`timeline-chart-content timeline-slide-${transitionDirection}`}
+          key={transitionKey}
+        >
+          <div className="timeline-grid-full" role="list">
+            {columns}
+          </div>
+        </div>
         {loading ? <span className="timeline-loading">Updating...</span> : null}
       </div>
     );
@@ -239,9 +252,11 @@ function TimelineBarChart({
 
   return (
     <div className={loading ? "chart-scroll-shell chart-updating" : "chart-scroll-shell"}>
-      <div className="chart-scroll-viewport" ref={viewportRef}>
-        <div className="bar-chart evolution-bar-chart" role="list">
-          {columns}
+      <div className={`timeline-chart-content timeline-slide-${transitionDirection}`} key={transitionKey}>
+        <div className="chart-scroll-viewport" ref={viewportRef}>
+          <div className="bar-chart evolution-bar-chart" role="list">
+            {columns}
+          </div>
         </div>
       </div>
       {loading ? <span className="timeline-loading">Updating...</span> : null}
@@ -267,6 +282,7 @@ function AlertEvolutionExplorerContent({
   const [evolution, setEvolution] = useState<AlertEvolutionResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [transitionDirection, setTransitionDirection] = useState<TimelineTransitionDirection>("neutral");
 
   const loadEvolution = useCallback(async () => {
     setError(null);
@@ -307,6 +323,7 @@ function AlertEvolutionExplorerContent({
   }, [searchParams]);
 
   const handleRangeChange = (nextRange: AlertEvolutionRange) => {
+    setTransitionDirection("neutral");
     setRange(nextRange);
     setBucket(defaultBucketByRange[nextRange]);
     setAnchor("");
@@ -318,6 +335,7 @@ function AlertEvolutionExplorerContent({
     if (!value) {
       return;
     }
+    setTransitionDirection("neutral");
     setAnchored(true);
     setWindowOffset(0);
     if (range === "1m") {
@@ -333,6 +351,7 @@ function AlertEvolutionExplorerContent({
     if (range === "all") {
       return;
     }
+    setTransitionDirection(direction === -1 ? "previous" : "next");
     if (!anchored) {
       setWindowOffset((current) => current + direction);
       return;
@@ -343,6 +362,7 @@ function AlertEvolutionExplorerContent({
   };
 
   const resetToNow = () => {
+    setTransitionDirection("neutral");
     setAnchor("");
     setAnchored(false);
     setWindowOffset(0);
@@ -355,6 +375,14 @@ function AlertEvolutionExplorerContent({
   const showCalendarValue = anchored || range === "1m" || range === "1y";
   const resetLabel = range === "1m" ? "Current month" : range === "1y" ? "Current year" : "Reset to now";
   const showResetButton = (anchored && !isCurrentAnchor(range, anchor)) || windowOffset < -1;
+  const transitionKey = [
+    range,
+    bucket,
+    evolution?.window_start || "start",
+    evolution?.window_end || "end",
+    anchor || "rolling",
+    windowOffset,
+  ].join(":");
 
   return (
     <div className={compact ? "alert-evolution compact-evolution" : "alert-evolution full-evolution"}>
@@ -387,7 +415,10 @@ function AlertEvolutionExplorerContent({
               <select
                 disabled={loading}
                 value={bucket}
-                onChange={(event) => setBucket(event.target.value as AlertEvolutionBucket)}
+                onChange={(event) => {
+                  setTransitionDirection("neutral");
+                  setBucket(event.target.value as AlertEvolutionBucket);
+                }}
               >
                 {bucketOptionsByRange[range].map((option) => (
                   <option key={option} value={option}>
@@ -453,6 +484,8 @@ function AlertEvolutionExplorerContent({
         interactive
         mode={mode}
         anchored={anchored || windowOffset !== 0}
+        transitionDirection={transitionDirection}
+        transitionKey={transitionKey}
       />
 
       {compact ? (

@@ -84,6 +84,9 @@ export type AlertPeriodResponse = {
   to?: string | null;
   archived: "all" | "true" | "false";
   total: number;
+  limit: number;
+  offset: number;
+  has_more: boolean;
   items: AlertPeriodItem[];
 };
 
@@ -371,12 +374,24 @@ export function getAlertEvolution(params: {
   return request<AlertEvolutionResponse>(`/analytics/alert-evolution?${search.toString()}`);
 }
 
-export function getAlertPeriod(params: { from: string; to: string; archived?: "all" | "true" | "false" }) {
+export function getAlertPeriod(params: {
+  from: string;
+  to: string;
+  archived?: "all" | "true" | "false";
+  limit?: number;
+  offset?: number;
+}) {
   const search = new URLSearchParams({
     from: params.from,
     to: params.to,
     archived: params.archived || "all",
   });
+  if (params.limit) {
+    search.set("limit", String(params.limit));
+  }
+  if (params.offset) {
+    search.set("offset", String(params.offset));
+  }
   return request<AlertPeriodResponse>(`/analytics/alert-period?${search.toString()}`);
 }
 
