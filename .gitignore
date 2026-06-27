@@ -4,12 +4,14 @@ __pycache__/
 *.db
 .env
 .env.*
+.env.demo
 !.env.example
 frontend/node_modules/
 frontend/.next/
 frontend/out/
 frontend/.env
 frontend/.env.*
+frontend/.env.demo
 !frontend/.env.example
 demo-output/
 .python-version

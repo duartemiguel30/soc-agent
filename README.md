@@ -348,7 +348,7 @@ The frontend uses FastAPI's HttpOnly cookie through `/backend/*`. It uses `local
 
 ## Automated Demo Recording
 
-The frontend includes a Playwright-based demo recorder for local presentations. It navigates the admin console, injects temporary on-screen captions, and records a browser video without changing app code or storing auth tokens in browser storage. The demo is read-only for incident data.
+The frontend includes a Playwright-based demo recorder for polished presentation-style videos. It navigates the admin console, injects temporary on-screen captions and a fake cursor, uses smooth human-like scrolling, and records a browser video without changing production app behavior or storing auth tokens in browser storage. The demo is read-only for incident data.
 
 Prerequisites:
 
@@ -363,16 +363,85 @@ Run from `frontend/`:
 DEMO_ADMIN_USERNAME=admin DEMO_ADMIN_PASSWORD=admin npm run demo:record
 ```
 
+The recorder automatically loads demo environment variables from `frontend/.env.demo`, then falls back to `.env.demo` in the repository root. Shell environment variables take precedence over values in `.env.demo`, so one-off overrides can be passed inline. To use a custom file, set `DEMO_ENV_FILE=/custom/path/.env.demo`.
+
+Example `frontend/.env.demo` for faster 1080p local testing:
+
+```env
+#### video record ####
+DEMO_FRONTEND_URL=http://192.168.56.105:3000
+DEMO_HEADLESS=false
+
+## 1080 ##
+DEMO_VIDEO_WIDTH=1920
+DEMO_VIDEO_HEIGHT=1080
+DEMO_SPEED=normal
+DEMO_CAPTION_MIN_MS=1400
+DEMO_CAPTION_MAX_MS=3200
+DEMO_CAPTION_PER_CHAR_MS=32
+DEMO_PAGE_MIN_MS=1200
+DEMO_PAGE_MAX_MS=2600
+DEMO_CLICK_PAUSE_MS=650
+DEMO_HOVER_PAUSE_MS=420
+DEMO_FILTER_PAUSE_MS=900
+DEMO_RANGE_PAUSE_MS=850
+DEMO_SECTION_PAUSE_MS=1200
+DEMO_SCROLL_MIN_MS=650
+DEMO_SCROLL_MAX_MS=1600
+DEMO_SLOW_MO_MS=220
+DEMO_GENERATE_REPORT=true
+DEMO_REPORT_TIMEOUT_MS=90000
+```
+
+Example 4K presentation block:
+
+```env
+## 4k ##
+DEMO_VIDEO_WIDTH="3840"
+DEMO_VIDEO_HEIGHT="2160"
+DEMO_HEADLESS=true
+```
+
 Optional variables:
 
 - `DEMO_FRONTEND_URL`: defaults to `http://192.168.56.105:3000`.
 - `DEMO_BASE_URL`: legacy fallback if `DEMO_FRONTEND_URL` is not set.
 - `DEMO_ADMIN_USERNAME`: defaults to `admin` for local demo convenience.
 - `DEMO_ADMIN_PASSWORD`: defaults to `admin` for local demo convenience.
-- `DEMO_HEADLESS`: defaults to `true`; set `DEMO_HEADLESS=false` to show the browser.
+- `DEMO_HEADLESS`: defaults to `false` for visible local recording; set `DEMO_HEADLESS=true` for headless runs.
+- `DEMO_VIDEO_WIDTH`: defaults to `1920`.
+- `DEMO_VIDEO_HEIGHT`: defaults to `1080`.
+- `DEMO_SPEED`: supports `slow`, `normal`, or `fast`; defaults to `normal`.
+- `DEMO_SPEED_MULTIPLIER`: optional numeric multiplier such as `0.85`; overrides `DEMO_SPEED`.
 - `DEMO_SLOW_MO_MS`: defaults to `120`.
-- `DEMO_STEP_PAUSE_MS`: defaults to `1600`.
+- `DEMO_CAPTION_MIN_MS`: defaults to `1400`.
+- `DEMO_CAPTION_MAX_MS`: defaults to `3200`.
+- `DEMO_CAPTION_PER_CHAR_MS`: defaults to `32`.
+- `DEMO_PAGE_MIN_MS`: defaults to `1200`.
+- `DEMO_PAGE_MAX_MS`: defaults to `2600`.
+- `DEMO_CLICK_PAUSE_MS`: defaults to `650`.
+- `DEMO_HOVER_PAUSE_MS`: defaults to `420`.
+- `DEMO_FILTER_PAUSE_MS`: defaults to `900`.
+- `DEMO_RANGE_PAUSE_MS`: defaults to `850`.
+- `DEMO_SECTION_PAUSE_MS`: defaults to `1200`.
+- `DEMO_SCROLL_MIN_MS`: defaults to `650`.
+- `DEMO_SCROLL_MAX_MS`: defaults to `1600`.
+- `DEMO_GENERATE_REPORT`: defaults to `true`; the recorder clicks `Generate report` on `/report`.
+- `DEMO_REPORT_TIMEOUT_MS`: defaults to `90000`; controls how long the recorder waits for generated report output.
 - `DEMO_TOGGLE_THEME=true`: toggles light/dark mode once during the recording.
+- `DEMO_ENV_FILE`: optional path to a specific demo env file.
+
+For faster local test recordings, override the video size:
+
+```bash
+DEMO_VIDEO_WIDTH=1920 DEMO_VIDEO_HEIGHT=1080 DEMO_ADMIN_USERNAME=admin DEMO_ADMIN_PASSWORD=admin npm run demo:record
+```
+
+For final 4K recording, keep the same pacing and only override output size/headless mode:
+
+```bash
+DEMO_VIDEO_WIDTH=3840 DEMO_VIDEO_HEIGHT=2160 DEMO_HEADLESS=true DEMO_ADMIN_USERNAME=admin DEMO_ADMIN_PASSWORD=admin npm run demo:record
+```
 
 The output video is saved at:
 
@@ -380,15 +449,25 @@ The output video is saved at:
 demo-output/soc-ai-agent-demo.webm
 ```
 
-Optional MP4 conversion if `ffmpeg` is installed:
+Optional high-quality 4K MP4 conversion if `ffmpeg` is installed:
 
 ```bash
-ffmpeg -y -i demo-output/soc-ai-agent-demo.webm demo-output/soc-ai-agent-demo.mp4
+ffmpeg -y -i demo-output/soc-ai-agent-demo.webm \
+  -c:v libx264 -crf 18 -preset slow -pix_fmt yuv420p \
+  demo-output/soc-ai-agent-demo-4k.mp4
 ```
 
-The demo covers dashboard metrics, Alert/Event Evolution, alert timeline drilldowns, MITRE analytics, incident filters and progressive loading, incident detail sections, response-action availability, and `/report`.
+Faster test conversion:
 
-The demo flow opens pages, changes read-only filters, scrolls, opens drilldowns, opens an incident detail, and visits `/report`; it does not approve, reject, archive, unarchive, execute response actions, create notes, update playbook steps, or create playbooks.
+```bash
+ffmpeg -y -i demo-output/soc-ai-agent-demo.webm \
+  -c:v libx264 -crf 23 -preset medium -pix_fmt yuv420p \
+  demo-output/soc-ai-agent-demo.mp4
+```
+
+The demo covers dashboard metrics, Alert/Event Evolution, alert timeline drilldowns, MITRE analytics, incident filters and progressive loading, incident detail sections, response-action availability, and `/report`. On `/report`, it clicks `Generate report` by default and waits for the read-only generated executive summary to appear. This may call Gemini or another upstream AI service and can take time. Captions intentionally stay visible long enough for viewers to read them, and the injected cursor exists only during recording.
+
+The demo flow opens pages, changes read-only filters, scrolls, opens drilldowns, opens an incident detail, and generates the read-only report; it does not approve, reject, archive, unarchive, execute response actions, create notes, update playbook steps, or create playbooks.
 
 ## Validation
 

@@ -38,3 +38,20 @@ sudo apt update
 sudo apt install nodejs npm -y
 node -v
 npm -v
+
+---
+
+Prod usar:
+
+npm run build
+npm run start -- -H 0.0.0.0
+
+---
+
+Playwright video
+
+on frontend/
+npm run demo:record 
+
+on the repo page
+ffmpeg -y -i demo-output/soc-ai-agent-demo.webm demo-output/soc-ai-agent-demo.mp4
