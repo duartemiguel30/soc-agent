@@ -17,6 +17,11 @@ import {
 
 const roles: AdminRole[] = ["super_admin", "admin", "analyst", "viewer"];
 
+type UserDraft = {
+  display_name: string;
+  role: AdminRole;
+};
+
 function formatDate(value?: string | null) {
   if (!value) return "Never";
   const date = new Date(value);
@@ -27,14 +32,24 @@ function emptyCreateForm() {
   return { username: "", display_name: "", role: "analyst" as AdminRole, password: "" };
 }
 
+function draftFromUser(user: AdminUser): UserDraft {
+  return {
+    display_name: user.display_name || "",
+    role: (user.role || "viewer") as AdminRole,
+  };
+}
+
 export default function AdminUsersPage() {
   const [users, setUsers] = useState<AdminUser[]>([]);
+  const [userDrafts, setUserDrafts] = useState<Record<number, UserDraft>>({});
   const [createForm, setCreateForm] = useState(emptyCreateForm);
   const [resetPasswords, setResetPasswords] = useState<Record<number, string>>({});
+  const [savingUserId, setSavingUserId] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [rowErrors, setRowErrors] = useState<Record<number, string>>({});
 
   const activeSuperAdmins = useMemo(
     () => users.filter((user) => user.role === "super_admin" && user.is_active).length,
@@ -44,7 +59,16 @@ export default function AdminUsersPage() {
   const refresh = useCallback(async () => {
     setError(null);
     try {
-      setUsers(await listAdminUsers());
+      const nextUsers = await listAdminUsers();
+      setUsers(nextUsers);
+      setUserDrafts(
+        Object.fromEntries(
+          nextUsers
+            .filter((user): user is AdminUser & { id: number } => typeof user.id === "number")
+            .map((user) => [user.id, draftFromUser(user)]),
+        ),
+      );
+      setRowErrors({});
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load admin users");
     } finally {
@@ -74,19 +98,57 @@ export default function AdminUsersPage() {
     }
   }
 
-  async function patchUser(user: AdminUser, payload: { display_name?: string | null; role?: AdminRole; is_active?: boolean }) {
+  function updateDraft(userId: number, patch: Partial<UserDraft>) {
+    setUserDrafts((current) => ({
+      ...current,
+      [userId]: {
+        ...(current[userId] || { display_name: "", role: "viewer" as AdminRole }),
+        ...patch,
+      },
+    }));
+    setRowErrors((current) => {
+      if (!current[userId]) return current;
+      const next = { ...current };
+      delete next[userId];
+      return next;
+    });
+  }
+
+  function draftChanged(user: AdminUser, draft: UserDraft) {
+    return draft.display_name !== (user.display_name || "") || draft.role !== (user.role || "viewer");
+  }
+
+  async function saveUser(user: AdminUser) {
     if (!user.id) return;
-    setBusy(true);
+    const draft = userDrafts[user.id] || draftFromUser(user);
+    if (!draftChanged(user, draft)) return;
+
+    const payload: { display_name?: string; role?: AdminRole } = {};
+    if (draft.display_name !== (user.display_name || "")) {
+      payload.display_name = draft.display_name;
+    }
+    if (draft.role !== (user.role || "viewer")) {
+      payload.role = draft.role;
+    }
+
+    setSavingUserId(user.id);
     setNotice(null);
-    setError(null);
+    setRowErrors((current) => {
+      const next = { ...current };
+      delete next[user.id as number];
+      return next;
+    });
     try {
       await updateAdminUser(user.id, payload);
       await refresh();
       setNotice("User updated.");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not update user");
+      setRowErrors((current) => ({
+        ...current,
+        [user.id as number]: err instanceof Error ? err.message : "Could not update user",
+      }));
     } finally {
-      setBusy(false);
+      setSavingUserId(null);
     }
   }
 
@@ -194,6 +256,10 @@ export default function AdminUsersPage() {
                   <div className="admin-table">
                     {users.map((user) => {
                       const lastSuperAdmin = user.role === "super_admin" && user.is_active && activeSuperAdmins <= 1;
+                      const userId = user.id || 0;
+                      const draft = user.id ? userDrafts[user.id] || draftFromUser(user) : draftFromUser(user);
+                      const isDirty = draftChanged(user, draft);
+                      const saving = savingUserId === user.id;
                       return (
                         <article className="admin-row" key={user.id || user.username}>
                           <div className="admin-row-main">
@@ -209,14 +275,18 @@ export default function AdminUsersPage() {
                             <label className="field">
                               Display name
                               <input
-                                defaultValue={user.display_name || ""}
-                                onBlur={(event) => patchUser(user, { display_name: event.target.value })}
-                                disabled={busy}
+                                value={draft.display_name}
+                                onChange={(event) => updateDraft(userId, { display_name: event.target.value })}
+                                disabled={busy || saving || !user.id}
                               />
                             </label>
                             <label className="field">
                               Role
-                              <select value={user.role as AdminRole} onChange={(event) => patchUser(user, { role: event.target.value as AdminRole })} disabled={busy || lastSuperAdmin}>
+                              <select
+                                value={draft.role}
+                                onChange={(event) => updateDraft(userId, { role: event.target.value as AdminRole })}
+                                disabled={busy || saving || lastSuperAdmin || !user.id}
+                              >
                                 {roles.map((role) => (
                                   <option key={role} value={role}>
                                     {role}
@@ -237,9 +307,13 @@ export default function AdminUsersPage() {
                             <button className="button secondary" onClick={() => resetPassword(user)} disabled={busy || !(resetPasswords[user.id || 0] || "").trim()}>
                               Reset password
                             </button>
+                            <button className="button primary" onClick={() => saveUser(user)} disabled={busy || saving || !isDirty || !user.id}>
+                              {saving ? "Saving..." : "Save changes"}
+                            </button>
                             <button className={user.is_active ? "button danger" : "button primary"} onClick={() => toggleUser(user)} disabled={busy || lastSuperAdmin}>
                               {user.is_active ? "Disable" : "Enable"}
                             </button>
+                            {user.id && rowErrors[user.id] ? <div className="alert error">{rowErrors[user.id]}</div> : null}
                           </div>
                         </article>
                       );
