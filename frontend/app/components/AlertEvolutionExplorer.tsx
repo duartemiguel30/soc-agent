@@ -58,6 +58,11 @@ function queryAnchor(value: string | null) {
   return value || "";
 }
 
+function queryOffset(value: string | null) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) ? parsed : 0;
+}
+
 function toDateInputValue(date: Date) {
   const localDate = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
   return localDate.toISOString().slice(0, 10);
@@ -88,6 +93,20 @@ function evolutionAnchorValue(range: AlertEvolutionRange, anchor: string) {
   return anchor;
 }
 
+function isCurrentAnchor(range: AlertEvolutionRange, anchor: string) {
+  if (!anchor) {
+    return true;
+  }
+  const today = toDateInputValue(new Date());
+  if (range === "1m") {
+    return anchor.slice(0, 7) === today.slice(0, 7);
+  }
+  if (range === "1y") {
+    return anchor.slice(0, 4) === today.slice(0, 4);
+  }
+  return anchor.slice(0, 10) === today;
+}
+
 function formatDataExtent(evolution: AlertEvolutionResponse | null) {
   if (!evolution?.data_start || !evolution.data_end) {
     return "No stored events";
@@ -100,10 +119,12 @@ function EmptyChart({ children = "No alert events in this period." }: { children
   return <div className="chart-empty">{children}</div>;
 }
 
-function timelineHref(range: AlertEvolutionRange, bucket: AlertEvolutionBucket, anchor?: string) {
+function timelineHref(range: AlertEvolutionRange, bucket: AlertEvolutionBucket, anchor?: string, offset = 0) {
   const search = new URLSearchParams({ range, bucket });
   if (anchor) {
     search.set("anchor", anchor);
+  } else if (offset) {
+    search.set("offset", String(offset));
   }
   return `/analytics/alerts?${search.toString()}`;
 }
@@ -115,6 +136,16 @@ function bucketDetailHref(mode: "compact" | "full", bucket: AlertEvolutionBucket
       from: item.start,
       to: item.end,
     });
+    if (bucket === "hour" || bucket === "day") {
+      search.set("date_scope", "day");
+      search.set("date", item.start.slice(0, 10));
+    } else if (bucket === "month") {
+      search.set("date_scope", "month");
+      search.set("month", item.start.slice(0, 7));
+    } else if (bucket === "year") {
+      search.set("date_scope", "year");
+      search.set("year", item.start.slice(0, 4));
+    }
     return `/incidents?${search.toString()}`;
   }
   const search = new URLSearchParams({
@@ -232,6 +263,7 @@ function AlertEvolutionExplorerContent({
   const [bucket, setBucket] = useState<AlertEvolutionBucket>(() => queryBucket(searchParams.get("bucket"), initialRange));
   const [anchor, setAnchor] = useState(initialAnchor);
   const [anchored, setAnchored] = useState(Boolean(initialAnchor));
+  const [windowOffset, setWindowOffset] = useState(() => (initialAnchor ? 0 : queryOffset(searchParams.get("offset"))));
   const [evolution, setEvolution] = useState<AlertEvolutionResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -245,6 +277,7 @@ function AlertEvolutionExplorerContent({
           range,
           bucket,
           anchor: range === "all" || !anchored ? undefined : anchor,
+          offset: range === "all" || anchored ? undefined : windowOffset,
           archived: "all",
         }),
       );
@@ -253,7 +286,7 @@ function AlertEvolutionExplorerContent({
     } finally {
       setLoading(false);
     }
-  }, [anchor, anchored, bucket, range]);
+  }, [anchor, anchored, bucket, range, windowOffset]);
 
   useEffect(() => {
     const initialLoad = window.setTimeout(loadEvolution, 0);
@@ -268,6 +301,7 @@ function AlertEvolutionExplorerContent({
       setBucket(queryBucket(searchParams.get("bucket"), nextRange));
       setAnchor(nextAnchor);
       setAnchored(Boolean(nextAnchor));
+      setWindowOffset(nextAnchor ? 0 : queryOffset(searchParams.get("offset")));
     }, 0);
     return () => window.clearTimeout(applyParams);
   }, [searchParams]);
@@ -277,6 +311,7 @@ function AlertEvolutionExplorerContent({
     setBucket(defaultBucketByRange[nextRange]);
     setAnchor("");
     setAnchored(false);
+    setWindowOffset(0);
   };
 
   const handleAnchorChange = (value: string) => {
@@ -284,6 +319,7 @@ function AlertEvolutionExplorerContent({
       return;
     }
     setAnchored(true);
+    setWindowOffset(0);
     if (range === "1m") {
       setAnchor(`${value}-01`);
     } else if (range === "1y") {
@@ -294,8 +330,14 @@ function AlertEvolutionExplorerContent({
   };
 
   const handleNavigation = (direction: -1 | 1) => {
-    if (range !== "all") {
-      setAnchored(true);
+    if (range === "all") {
+      return;
+    }
+    if (!anchored) {
+      setWindowOffset((current) => current + direction);
+      return;
+    }
+    if (anchored) {
       setAnchor((current) => shiftAnchorDate(current || toDateInputValue(new Date()), range, direction));
     }
   };
@@ -303,6 +345,7 @@ function AlertEvolutionExplorerContent({
   const resetToNow = () => {
     setAnchor("");
     setAnchored(false);
+    setWindowOffset(0);
   };
 
   const showBucketSelector = bucketOptionsByRange[range].length > 1;
@@ -311,6 +354,7 @@ function AlertEvolutionExplorerContent({
   const displayAnchor = anchor || toDateInputValue(new Date());
   const showCalendarValue = anchored || range === "1m" || range === "1y";
   const resetLabel = range === "1m" ? "Current month" : range === "1y" ? "Current year" : "Reset to now";
+  const showResetButton = (anchored && !isCurrentAnchor(range, anchor)) || windowOffset < -1;
 
   return (
     <div className={compact ? "alert-evolution compact-evolution" : "alert-evolution full-evolution"}>
@@ -391,7 +435,7 @@ function AlertEvolutionExplorerContent({
               >
                 Next
               </button>
-              {anchored ? (
+              {showResetButton ? (
                 <button className="button ghost" onClick={resetToNow} type="button">
                   {resetLabel}
                 </button>
@@ -408,13 +452,15 @@ function AlertEvolutionExplorerContent({
         bucket={bucket}
         interactive
         mode={mode}
-        anchored={anchored}
+        anchored={anchored || windowOffset !== 0}
       />
 
       {compact ? (
         <div className="chart-footer">
           <span>Correlated attacks can have multiple alert events inside one incident.</span>
-          <Link href={timelineHref(range, bucket, range === "all" ? undefined : anchor)}>Explore timeline</Link>
+          <Link href={timelineHref(range, bucket, range === "all" ? undefined : anchor, windowOffset)}>
+            Explore timeline
+          </Link>
         </div>
       ) : (
         <p className="section-subtitle">Counted by alert events. Correlated attacks can have multiple alert events inside one incident.</p>

@@ -345,7 +345,12 @@ def same_year(left: datetime, right: datetime) -> bool:
     return left.year == right.year
 
 
-def alert_evolution_window(range_name: str, anchor: str | None, timestamps: list[datetime]) -> tuple[datetime | None, datetime | None]:
+def alert_evolution_window(
+    range_name: str,
+    anchor: str | None,
+    timestamps: list[datetime],
+    offset: int = 0,
+) -> tuple[datetime | None, datetime | None]:
     if range_name == "all":
         if not timestamps:
             return None, None
@@ -356,13 +361,19 @@ def alert_evolution_window(range_name: str, anchor: str | None, timestamps: list
     now = utc_now()
     if not anchor:
         if range_name == "24h":
-            return now - timedelta(hours=24), now
+            end = now + timedelta(hours=24 * offset)
+            return end - timedelta(hours=24), end
         if range_name == "7d":
-            return now - timedelta(days=7), now
+            end = now + timedelta(days=7 * offset)
+            return end - timedelta(days=7), end
         if range_name == "1m":
-            return start_of_month(now), now
+            start = add_months(start_of_month(now), offset)
+            end = now if offset == 0 else add_months(start, 1)
+            return start, end
         if range_name == "1y":
-            return start_of_year(now), now
+            start = datetime(now.year + offset, 1, 1)
+            end = now if offset == 0 else datetime(start.year + 1, 1, 1)
+            return start, end
 
     anchor_date = parse_evolution_anchor(anchor)
     if range_name == "24h":
@@ -409,14 +420,24 @@ def alert_evolution_bucket_label(value: datetime, bucket: str) -> str:
     return value.strftime("%Y")
 
 
-def alert_evolution_window_label(range_name: str, start: datetime | None, end: datetime | None, anchored: bool) -> str:
+def alert_evolution_window_label(
+    range_name: str,
+    start: datetime | None,
+    end: datetime | None,
+    anchored: bool,
+    offset: int = 0,
+) -> str:
     if not start or not end:
         return "No stored events"
     if not anchored:
-        if range_name == "24h":
+        if range_name == "24h" and offset == 0:
             return "Last 24 hours"
-        if range_name == "7d":
+        if range_name == "7d" and offset == 0:
             return "Last 7 days"
+        if range_name == "24h":
+            return f"24h ending {end.strftime('%d/%m/%Y %H:%M')}"
+        if range_name == "7d":
+            return f"7d ending {end.strftime('%d/%m/%Y')}"
         if range_name == "1m":
             return start.strftime("%B %Y")
         if range_name == "1y":
@@ -502,6 +523,162 @@ def incident_matches_time_range(db: Session, incident: Incident, start: datetime
     if event_times:
         return any(timestamp_in_range(coerce_datetime(row[0]), start, end) for row in event_times)
     return timestamp_in_range(coerce_datetime(incident.created_at), start, end)
+
+
+SEVERITY_RANK = {"critical": 4, "high": 3, "medium": 2, "low": 1, "unknown": 0}
+
+
+def normalize_filter_value(value) -> str:
+    return str(value or "").strip().lower()
+
+
+def incident_severity(incident: Incident) -> str:
+    severity = normalize_filter_value(incident.severity)
+    return severity if severity in SEVERITY_RANK else "unknown"
+
+
+def incident_last_seen(db: Session, incident: Incident) -> datetime:
+    stats = incident_event_stats(db, incident)
+    return coerce_datetime(stats.get("last_seen")) or coerce_datetime(incident.created_at) or datetime.min
+
+
+def incident_last_seen_seconds(db: Session, incident: Incident) -> float:
+    try:
+        return incident_last_seen(db, incident).timestamp()
+    except (OverflowError, OSError, ValueError):
+        return 0
+
+
+def incident_matches_status(incident: Incident, status_filter: str | None) -> bool:
+    normalized = normalize_filter_value(status_filter)
+    if not normalized or normalized == "all":
+        return True
+
+    incident_status = normalize_filter_value(incident.status)
+    decision = normalize_filter_value(incident.decision)
+    if normalized == "pending_human":
+        return incident_status in {"pending_human", "pending"}
+    if normalized == "processed":
+        return "processed" in incident_status or decision == "auto_response"
+    return incident_status == normalized
+
+
+def incident_search_text(db: Session, incident: Incident) -> str:
+    stats = incident_event_stats(db, incident)
+    fields = [
+        incident.rule_description,
+        incident.rule_id,
+        incident.agent_name,
+        incident.mitre_technique,
+        incident.classification,
+        incident.reasoning,
+        incident.recommended_action,
+        incident.status,
+        incident.severity,
+        incident.decision,
+        stats.get("correlation_key"),
+        stats.get("first_seen"),
+        stats.get("last_seen"),
+    ]
+    event_rows = (
+        db.query(
+            IncidentAlertEvent.correlation_key,
+            IncidentAlertEvent.rule_id,
+            IncidentAlertEvent.agent_name,
+            IncidentAlertEvent.src_ip,
+            IncidentAlertEvent.target_username,
+            IncidentAlertEvent.summary,
+        )
+        .filter(IncidentAlertEvent.incident_id == incident.id)
+        .all()
+    )
+    for row in event_rows:
+        fields.extend(row)
+    return " ".join(str(field) for field in fields if field).lower()
+
+
+def incident_matches_filters(
+    db: Session,
+    incident: Incident,
+    status_filter: str | None,
+    severity: str | None,
+    classification: str | None,
+    decision: str | None,
+    rule_level: str | None,
+    mitre: str | None,
+    agent: str | None,
+    query: str | None,
+    start: datetime | None,
+    end: datetime | None,
+) -> bool:
+    if not incident_matches_time_range(db, incident, start, end):
+        return False
+    if not incident_matches_status(incident, status_filter):
+        return False
+
+    severity_filter = normalize_filter_value(severity)
+    if severity_filter and severity_filter != "all" and incident_severity(incident) != severity_filter:
+        return False
+
+    classification_filter = normalize_filter_value(classification)
+    if classification_filter and classification_filter != "all":
+        if normalize_filter_value(incident.classification) != classification_filter:
+            return False
+
+    decision_filter = normalize_filter_value(decision)
+    if decision_filter and decision_filter != "all":
+        if normalize_filter_value(incident.decision) != decision_filter:
+            return False
+
+    level_filter = normalize_filter_value(rule_level)
+    if level_filter in {"gte12", "12"} and (incident.rule_level or 0) < 12:
+        return False
+    if level_filter in {"gte15", "15"} and (incident.rule_level or 0) < 15:
+        return False
+
+    mitre_query = normalize_filter_value(mitre)
+    if mitre_query and mitre_query not in normalize_filter_value(incident.mitre_technique):
+        return False
+
+    agent_query = normalize_filter_value(agent)
+    if agent_query and agent_query not in normalize_filter_value(incident.agent_name):
+        return False
+
+    search_query = normalize_filter_value(query)
+    if search_query and search_query not in incident_search_text(db, incident):
+        return False
+
+    return True
+
+
+def sort_incidents(db: Session, incidents: list[Incident], sort_key: str) -> list[Incident]:
+    normalized = normalize_filter_value(sort_key) or "newest"
+    if normalized == "oldest":
+        return sorted(incidents, key=lambda incident: incident_last_seen(db, incident))
+    if normalized == "severity":
+        return sorted(
+            incidents,
+            key=lambda incident: (SEVERITY_RANK[incident_severity(incident)], incident_last_seen(db, incident)),
+            reverse=True,
+        )
+    if normalized == "level":
+        return sorted(
+            incidents,
+            key=lambda incident: (incident.rule_level or 0, incident_last_seen(db, incident)),
+            reverse=True,
+        )
+    if normalized == "confidence":
+        return sorted(
+            incidents,
+            key=lambda incident: (incident.confidence or 0, incident_last_seen(db, incident)),
+            reverse=True,
+        )
+    if normalized == "status":
+        return sorted(
+            incidents,
+            key=lambda incident: (normalize_filter_value(incident.status), -incident_last_seen_seconds(db, incident)),
+        )
+    return sorted(incidents, key=lambda incident: incident_last_seen(db, incident), reverse=True)
 
 
 def serialize_playbook(playbook: IncidentPlaybook, steps: list[IncidentPlaybookStep]) -> dict:
@@ -1135,6 +1312,7 @@ def get_alert_evolution(
     range: str = "24h",
     bucket: str | None = None,
     anchor: str | None = None,
+    offset: int = 0,
     archived: str = "all",
     db: Session = Depends(get_db),
     admin: dict = Depends(get_current_admin),
@@ -1156,7 +1334,7 @@ def get_alert_evolution(
         )
 
     timestamps = sorted(alert_evolution_records(db, archived))
-    window_start, window_end = alert_evolution_window(range_name, anchor, timestamps)
+    window_start, window_end = alert_evolution_window(range_name, anchor, timestamps, offset)
     anchored = bool(anchor and range_name != "all")
 
     points = []
@@ -1181,14 +1359,19 @@ def get_alert_evolution(
         "archived": (archived or "all").lower(),
         "window_start": window_start,
         "window_end": window_end,
-        "window_label": alert_evolution_window_label(range_name, window_start, window_end, anchored),
+        "window_label": alert_evolution_window_label(range_name, window_start, window_end, anchored, offset),
         "mode": "anchored" if anchored else "rolling",
+        "offset": 0 if anchored or range_name == "all" else offset,
         "points": points,
         "total": sum(point["count"] for point in points),
         "data_start": min(timestamps) if timestamps else None,
         "data_end": max(timestamps) if timestamps else None,
         "can_go_previous": bool(window_start and range_name != "all" and any(timestamp < window_start for timestamp in timestamps)),
-        "can_go_next": bool(window_end and range_name != "all" and any(timestamp >= window_end for timestamp in timestamps)),
+        "can_go_next": bool(
+            window_end
+            and range_name != "all"
+            and ((not anchored and offset < 0) or (anchored and any(timestamp >= window_end for timestamp in timestamps)))
+        ),
     }
 
 
@@ -1268,6 +1451,17 @@ def list_incidents(
     archived: str = "all",
     from_: str | None = Query(None, alias="from"),
     to: str | None = None,
+    status_filter: str | None = Query(None, alias="status"),
+    severity: str | None = None,
+    classification: str | None = None,
+    decision: str | None = None,
+    rule_level: str | None = None,
+    mitre: str | None = None,
+    agent: str | None = None,
+    q: str | None = None,
+    sort: str = "newest",
+    limit: int | None = Query(None, ge=1, le=100),
+    offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     admin: dict = Depends(get_current_admin),
 ):
@@ -1277,17 +1471,43 @@ def list_incidents(
     if start and end and start >= end:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="from must be before to")
 
-    incidents = incident_query_with_archive_filter(db, archived).order_by(Incident.created_at.desc()).all()
-    if start or end:
-        incidents = [incident for incident in incidents if incident_matches_time_range(db, incident, start, end)]
+    incidents = incident_query_with_archive_filter(db, archived).all()
+    incidents = [
+        incident
+        for incident in incidents
+        if incident_matches_filters(
+            db,
+            incident,
+            status_filter,
+            severity,
+            classification,
+            decision,
+            rule_level,
+            mitre,
+            agent,
+            q,
+            start,
+            end,
+        )
+    ]
+    incidents = sort_incidents(db, incidents, sort)
 
-    if archived.lower() == "all":
-        archive_states = {state.incident_id: state for state in db.query(IncidentArchiveState).all()}
-        return [serialize_incident(incident, archive_states.get(incident.id), db) for incident in incidents]
-    if archived.lower() == "true":
-        archive_states = {state.incident_id: state for state in db.query(IncidentArchiveState).all()}
-        return [serialize_incident(incident, archive_states.get(incident.id), db) for incident in incidents]
-    return [serialize_incident(incident, db=db) for incident in incidents]
+    total = len(incidents)
+    paged_incidents = incidents[offset : offset + limit] if limit is not None else incidents
+
+    archive_states = {state.incident_id: state for state in db.query(IncidentArchiveState).all()}
+    items = [serialize_incident(incident, archive_states.get(incident.id), db) for incident in paged_incidents]
+
+    if limit is None:
+        return items
+
+    return {
+        "items": items,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "has_more": offset + limit < total,
+    }
 
 
 @app.get("/incidents/pending")

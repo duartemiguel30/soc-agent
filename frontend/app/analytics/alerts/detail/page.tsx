@@ -6,7 +6,7 @@ import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/app/components/AppShell";
 import { AuthGuard } from "@/app/components/AuthGuard";
 import { AlertPeriodResponse, getAlertPeriod } from "@/lib/api";
-import { formatIncidentDate, labelValue, shortIncidentId } from "@/lib/incidents";
+import { formatIncidentDate, getSeverity, labelValue, shortIncidentId } from "@/lib/incidents";
 
 function formatPeriodTitle(bucket: string | null, start: string | null, end: string | null) {
   const startDate = start ? new Date(start) : null;
@@ -101,17 +101,35 @@ function AlertPeriodContent() {
                 <div className="loading-panel">Loading alert period...</div>
               ) : period?.items.length ? (
                 <div className="detail-list">
-                  {period.items.map((item, index) => (
-                    <Link className="detail-row" href={`/incidents/${item.incident.id}`} key={`${item.incident.id}-${item.event?.id || index}`}>
-                      <span>{formatIncidentDate(item.timestamp)}</span>
-                      <strong>
-                        #{shortIncidentId(item.incident.id)} - {item.event?.summary || item.incident.rule_description || "Stored incident"}
-                      </strong>
-                      <p>
-                        {labelValue(item.incident.severity)} / {labelValue(item.incident.decision)} / {item.incident.agent_name || "Unknown agent"}
-                      </p>
-                    </Link>
-                  ))}
+                  {period.items.map((item, index) => {
+                    const severity = getSeverity(item.incident);
+                    return (
+                      <Link
+                        className="detail-row alert-drilldown-card"
+                        href={`/incidents/${item.incident.id}`}
+                        key={`${item.incident.id}-${item.event?.id || index}`}
+                      >
+                        <div className="alert-drilldown-card-head">
+                          <div className="alert-drilldown-card-title">
+                            <span>{formatIncidentDate(item.timestamp)}</span>
+                            <strong>
+                              #{shortIncidentId(item.incident.id)} -{" "}
+                              {item.event?.summary || item.incident.rule_description || "Stored incident"}
+                            </strong>
+                          </div>
+                          <div className="alert-drilldown-badges" aria-label="Alert classification">
+                            {item.incident.mitre_technique ? (
+                              <span className="badge attack-type">{item.incident.mitre_technique}</span>
+                            ) : null}
+                            <span className={`badge severity-${severity}`}>{labelValue(severity)}</span>
+                          </div>
+                        </div>
+                        <p>
+                          {labelValue(item.incident.decision)} / {item.incident.agent_name || "Unknown agent"}
+                        </p>
+                      </Link>
+                    );
+                  })}
                 </div>
               ) : (
                 <div className="empty-state">No alert events match this period.</div>

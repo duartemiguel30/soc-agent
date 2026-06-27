@@ -62,6 +62,7 @@ export type AlertEvolutionResponse = {
   window_end?: string | null;
   window_label: string;
   mode?: "rolling" | "anchored";
+  offset?: number;
   points: AlertEvolutionPoint[];
   total: number;
   data_start?: string | null;
@@ -83,6 +84,31 @@ export type AlertPeriodResponse = {
   archived: "all" | "true" | "false";
   total: number;
   items: AlertPeriodItem[];
+};
+
+export type IncidentPageResponse = {
+  items: Incident[];
+  total: number;
+  limit: number;
+  offset: number;
+  has_more: boolean;
+};
+
+export type IncidentPageParams = {
+  archived?: "all" | "true" | "false";
+  from?: string | null;
+  to?: string | null;
+  status?: string;
+  severity?: string;
+  classification?: string;
+  decision?: string;
+  rule_level?: string;
+  mitre?: string;
+  agent?: string;
+  q?: string;
+  sort?: string;
+  limit?: number;
+  offset?: number;
 };
 
 export type IncidentArchiveState = {
@@ -282,10 +308,53 @@ export function listIncidents(
   return request<Incident[]>(`/incidents?${search.toString()}`);
 }
 
+export function listIncidentsPage(params: IncidentPageParams = {}) {
+  const search = new URLSearchParams({
+    archived: params.archived || "all",
+    limit: String(params.limit || 25),
+    offset: String(params.offset || 0),
+  });
+  if (params.from) {
+    search.set("from", params.from);
+  }
+  if (params.to) {
+    search.set("to", params.to);
+  }
+  if (params.status && params.status !== "all") {
+    search.set("status", params.status);
+  }
+  if (params.severity && params.severity !== "all") {
+    search.set("severity", params.severity);
+  }
+  if (params.classification && params.classification !== "all") {
+    search.set("classification", params.classification);
+  }
+  if (params.decision && params.decision !== "all") {
+    search.set("decision", params.decision);
+  }
+  if (params.rule_level && params.rule_level !== "all") {
+    search.set("rule_level", params.rule_level);
+  }
+  if (params.mitre?.trim()) {
+    search.set("mitre", params.mitre.trim());
+  }
+  if (params.agent?.trim()) {
+    search.set("agent", params.agent.trim());
+  }
+  if (params.q?.trim()) {
+    search.set("q", params.q.trim());
+  }
+  if (params.sort) {
+    search.set("sort", params.sort);
+  }
+  return request<IncidentPageResponse>(`/incidents?${search.toString()}`);
+}
+
 export function getAlertEvolution(params: {
   range: AlertEvolutionRange;
   bucket: AlertEvolutionBucket;
   anchor?: string;
+  offset?: number;
   archived?: "all" | "true" | "false";
 }) {
   const search = new URLSearchParams({
@@ -295,6 +364,8 @@ export function getAlertEvolution(params: {
   });
   if (params.anchor) {
     search.set("anchor", params.anchor);
+  } else if (typeof params.offset === "number" && params.offset !== 0) {
+    search.set("offset", String(params.offset));
   }
   return request<AlertEvolutionResponse>(`/analytics/alert-evolution?${search.toString()}`);
 }

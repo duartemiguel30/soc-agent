@@ -233,6 +233,8 @@ Archive state is separate from incident operational status. Archiving affects li
 - `?archived=false`
 - `?archived=true`
 - `?archived=all`
+- optional server-side filters: `status`, `severity`, `classification`, `decision`, `rule_level`, `mitre`, `agent`, `q`, `sort`, `from`, and `to`
+- optional pagination with `limit` and `offset`; when `limit` is present the response is `{ items, total, limit, offset, has_more }`, while unpaginated callers still receive the original array shape
 
 ## Backend API
 
@@ -316,7 +318,7 @@ The evolution explorer supports:
 
 By default, Alert/Event Evolution opens on `24h`. The `24h` and `7d` ranges are rolling windows relative to the current time. The `1m` and `1y` ranges are calendar windows: current month-to-now and current year-to-now by default, with month/year pickers for anchored historical periods.
 
-Previous/next navigation is disabled when no stored event exists outside the current selected period. No heavy chart dependency is used; charts are plain React, CSS, and SVG. The dashboard uses a compact responsive analytics grid for event evolution, severity, MITRE, decision, and agent distributions. The dashboard timeline uses compact contained scrolling when buckets do not fit, while `/analytics/alerts` uses an expanded wrapped timeline view that avoids internal horizontal scrollbars and spends vertical page space instead.
+Previous/next navigation moves one full selected window at a time. From the current rolling window, Previous steps back once and Next returns naturally to the current live window; the reset/current button appears only when the selection is more than one step away from current or when a manual historical calendar anchor is selected. `All` history hides period navigation. No heavy chart dependency is used; charts are plain React, CSS, and SVG with CSS-only height/fade transitions during refresh. The dashboard uses a compact responsive analytics grid for event evolution, severity, MITRE, decision, and agent distributions. The dashboard timeline uses compact contained scrolling when buckets do not fit, while `/analytics/alerts` uses an expanded wrapped timeline view that avoids internal horizontal scrollbars and spends vertical page space instead.
 
 Dashboard metric semantics are explicit:
 
@@ -324,9 +326,9 @@ Dashboard metric semantics are explicit:
 - `Total alert events` counts correlated alert-event volume, falling back to one event for older incidents without alert-event rows.
 - Dashboard charts are event-weighted by default and use `Counted by alert events` labels where the value is not a plain incident count.
 
-Dashboard metric cards and chart rows link to filtered internal views. Severity, decision, MITRE technique, and agent drilldowns open `/incidents` with query-param initialized filters. Timeline bucket clicks on the dashboard open `/incidents?archived=all&from=...&to=...`; bucket clicks on `/analytics/alerts` open a read-only alert-period drilldown. The incidents page supports `archived`, `status`, `severity`, `classification`, `decision`, `rule_level`, `mitre`, `agent`, `from`, `to`, and `q` query params.
+Dashboard metric cards and chart rows link to filtered internal views. Severity, decision, MITRE technique, and agent drilldowns open `/incidents` with query-param initialized filters. Timeline bucket clicks on the dashboard open `/incidents` with `archived=all`, exact `from`/`to` bounds, and friendly Date scope params where applicable: day/hour buckets initialize `date_scope=day&date=YYYY-MM-DD`, month buckets initialize `date_scope=month&month=YYYY-MM`, and year buckets initialize `date_scope=year&year=YYYY`. Bucket clicks on `/analytics/alerts` open a read-only alert-period drilldown. The incidents page supports `archived`, `status`, `severity`, `classification`, `decision`, `rule_level`, `mitre`, `agent`, `date_scope`, `date`, `month`, `year`, `from`, `to`, and `q` query params.
 
-The `/incidents` page is the main active/archive workflow. Its Archive scope filter supports Active (`archived=false`), Archived (`archived=true`), and All (`archived=all`), with Active as the default. The legacy `/archive` route remains available as a compatibility shortcut and redirects to `/incidents?archived=true`.
+The `/incidents` page is the main active/archive workflow. It initially renders at most 25 matching cards, then loads the next 25 as the normal page scroll nears the bottom; there is no internal vertical results scrollbar. Its Archive scope filter supports Active (`archived=false`), Archived (`archived=true`), and All (`archived=all`), with Active as the default. The Date scope filter supports All, Day, Month, and Year; Day uses a date picker, Month uses a month picker, and Year uses a numeric year field. Changing search, sort, archive scope, Date scope, or any filter resets pagination to the first page. The legacy `/archive` route remains available as a compatibility shortcut and redirects to `/incidents?archived=true`.
 
 Mobile navigation uses a polished right-side drawer with an overlay; the theme toggle and logout remain inside the drawer. Incident detail uses explicit responsive columns on desktop to avoid large grid gaps, with long activity/history/playbook/note lists scrolling internally for balance, then collapses to one ordered column on narrow screens.
 
