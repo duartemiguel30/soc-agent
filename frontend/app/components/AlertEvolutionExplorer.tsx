@@ -109,6 +109,19 @@ function isCurrentAnchor(range: AlertEvolutionRange, anchor: string) {
   return anchor.slice(0, 10) === today;
 }
 
+function calendarDistanceFromCurrent(range: AlertEvolutionRange, anchor: string) {
+  const today = toDateInputValue(new Date());
+  if (range === "1m") {
+    const [currentYear, currentMonth] = today.slice(0, 7).split("-").map(Number);
+    const [selectedYear, selectedMonth] = anchor.slice(0, 7).split("-").map(Number);
+    return (currentYear - selectedYear) * 12 + (currentMonth - selectedMonth);
+  }
+  if (range === "1y") {
+    return Number(today.slice(0, 4)) - Number(anchor.slice(0, 4));
+  }
+  return 0;
+}
+
 function formatDataExtent(evolution: AlertEvolutionResponse | null) {
   if (!evolution?.data_start || !evolution.data_end) {
     return "No stored events";
@@ -278,11 +291,15 @@ function AlertEvolutionExplorerContent({
   const [bucket, setBucket] = useState<AlertEvolutionBucket>(() => queryBucket(searchParams.get("bucket"), initialRange));
   const [anchor, setAnchor] = useState(initialAnchor);
   const [anchored, setAnchored] = useState(Boolean(initialAnchor));
+  const [manualAnchor, setManualAnchor] = useState(Boolean(initialAnchor));
   const [windowOffset, setWindowOffset] = useState(() => (initialAnchor ? 0 : queryOffset(searchParams.get("offset"))));
   const [evolution, setEvolution] = useState<AlertEvolutionResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [transitionDirection, setTransitionDirection] = useState<TimelineTransitionDirection>("neutral");
+
+  const calendarRange = range === "1m" || range === "1y";
+  const effectiveAnchor = calendarRange ? anchor || toDateInputValue(new Date()) : anchor;
 
   const loadEvolution = useCallback(async () => {
     setError(null);
@@ -292,8 +309,8 @@ function AlertEvolutionExplorerContent({
         await getAlertEvolution({
           range,
           bucket,
-          anchor: range === "all" || !anchored ? undefined : anchor,
-          offset: range === "all" || anchored ? undefined : windowOffset,
+          anchor: range === "all" || (!calendarRange && !anchored) ? undefined : effectiveAnchor,
+          offset: range === "all" || calendarRange || anchored ? undefined : windowOffset,
           archived: "all",
         }),
       );
@@ -302,7 +319,7 @@ function AlertEvolutionExplorerContent({
     } finally {
       setLoading(false);
     }
-  }, [anchor, anchored, bucket, range, windowOffset]);
+  }, [anchored, bucket, calendarRange, effectiveAnchor, range, windowOffset]);
 
   useEffect(() => {
     const initialLoad = window.setTimeout(loadEvolution, 0);
@@ -317,6 +334,7 @@ function AlertEvolutionExplorerContent({
       setBucket(queryBucket(searchParams.get("bucket"), nextRange));
       setAnchor(nextAnchor);
       setAnchored(Boolean(nextAnchor));
+      setManualAnchor(Boolean(nextAnchor));
       setWindowOffset(nextAnchor ? 0 : queryOffset(searchParams.get("offset")));
     }, 0);
     return () => window.clearTimeout(applyParams);
@@ -328,6 +346,7 @@ function AlertEvolutionExplorerContent({
     setBucket(defaultBucketByRange[nextRange]);
     setAnchor("");
     setAnchored(false);
+    setManualAnchor(false);
     setWindowOffset(0);
   };
 
@@ -337,6 +356,7 @@ function AlertEvolutionExplorerContent({
     }
     setTransitionDirection("neutral");
     setAnchored(true);
+    setManualAnchor(true);
     setWindowOffset(0);
     if (range === "1m") {
       setAnchor(`${value}-01`);
@@ -352,6 +372,13 @@ function AlertEvolutionExplorerContent({
       return;
     }
     setTransitionDirection(direction === -1 ? "previous" : "next");
+    if (range === "1m" || range === "1y") {
+      setAnchored(true);
+      setManualAnchor(false);
+      setWindowOffset(0);
+      setAnchor((current) => shiftAnchorDate(current || toDateInputValue(new Date()), range, direction));
+      return;
+    }
     if (!anchored) {
       setWindowOffset((current) => current + direction);
       return;
@@ -365,24 +392,32 @@ function AlertEvolutionExplorerContent({
     setTransitionDirection("neutral");
     setAnchor("");
     setAnchored(false);
+    setManualAnchor(false);
     setWindowOffset(0);
   };
 
   const showBucketSelector = bucketOptionsByRange[range].length > 1;
   const showDatePicker = range !== "all";
   const compact = mode === "compact";
-  const displayAnchor = anchor || toDateInputValue(new Date());
+  const todayInput = toDateInputValue(new Date());
+  const displayAnchor = effectiveAnchor || todayInput;
   const showCalendarValue = anchored || range === "1m" || range === "1y";
   const resetLabel = range === "1m" ? "Current month" : range === "1y" ? "Current year" : "Reset to now";
-  const showResetButton = (anchored && !isCurrentAnchor(range, anchor)) || windowOffset < -1;
+  const calendarDistance = calendarRange ? calendarDistanceFromCurrent(range, effectiveAnchor) : 0;
+  const calendarAtCurrent = calendarRange && isCurrentAnchor(range, effectiveAnchor);
+  const showResetButton = calendarRange
+    ? !calendarAtCurrent && (manualAnchor || calendarDistance > 1)
+    : (anchored && !isCurrentAnchor(range, anchor)) || windowOffset < -1;
   const transitionKey = [
     range,
     bucket,
     evolution?.window_start || "start",
     evolution?.window_end || "end",
-    anchor || "rolling",
+    effectiveAnchor || "rolling",
     windowOffset,
   ].join(":");
+  const previousDisabled = loading || (!calendarRange && !evolution?.can_go_previous);
+  const nextDisabled = loading || (calendarRange ? calendarDistance <= 0 : !evolution?.can_go_next);
 
   return (
     <div className={compact ? "alert-evolution compact-evolution" : "alert-evolution full-evolution"}>
@@ -438,7 +473,7 @@ function AlertEvolutionExplorerContent({
             <label className="field compact-field">
               {range === "1m" ? "Month" : range === "1y" ? "Year" : "Date"}
               <input
-                max={range === "1y" ? "9999" : undefined}
+                max={range === "1m" ? todayInput.slice(0, 7) : range === "1y" ? todayInput.slice(0, 4) : undefined}
                 min={range === "1y" ? "1970" : undefined}
                 disabled={loading}
                 onChange={(event) => handleAnchorChange(event.target.value)}
@@ -452,7 +487,7 @@ function AlertEvolutionExplorerContent({
             <div className="chart-nav" aria-label="Time period navigation">
               <button
                 className="button ghost"
-                disabled={loading || !evolution?.can_go_previous}
+                disabled={previousDisabled}
                 onClick={() => handleNavigation(-1)}
                 type="button"
               >
@@ -460,7 +495,7 @@ function AlertEvolutionExplorerContent({
               </button>
               <button
                 className="button ghost"
-                disabled={loading || !evolution?.can_go_next}
+                disabled={nextDisabled}
                 onClick={() => handleNavigation(1)}
                 type="button"
               >
