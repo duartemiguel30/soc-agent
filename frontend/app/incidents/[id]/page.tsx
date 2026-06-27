@@ -15,6 +15,7 @@ import {
   getIncident,
   getIncidentPlaybook,
   getIncidentTimeline,
+  hasPermission,
   Incident,
   IncidentActionEvent,
   IncidentAlertEvent,
@@ -123,7 +124,7 @@ export default function IncidentDetailPage() {
         listIncidentActions(incidentId),
         listIncidentObservables(incidentId),
         listIncidentAlertEvents(incidentId),
-        listIncidentResponseActions(incidentId),
+        listIncidentResponseActions(incidentId).catch(() => []),
       ]);
       setIncident(incidentData);
       setPlaybook(playbookData.playbook);
@@ -289,7 +290,7 @@ export default function IncidentDetailPage() {
     setResponseActionConfirms((current) => ({ ...current, [actionKey]: value }));
   }
 
-  function renderAvailableResponseAction(action: ResponseAction, group: "suggested" | "available") {
+  function renderAvailableResponseAction(action: ResponseAction, group: "suggested" | "available", canExecute: boolean) {
     const latestResult = responseActionResults[action.key];
     const previewText = resultText(latestResult || action.dry_run);
     const isHighRisk = action.risk_level === "high" || action.risk_level === "critical";
@@ -318,7 +319,7 @@ export default function IncidentDetailPage() {
           {adDryRun ? <span>No AD account will be disabled in dry-run mode.</span> : null}
         </div>
         {previewText ? <div className="dry-run-output">{previewText}</div> : null}
-        {needsAdConfirm && adDryRun ? (
+        {canExecute && needsAdConfirm && adDryRun ? (
           <div className="confirmation-grid">
             <label className="field">
               Confirmation
@@ -339,7 +340,7 @@ export default function IncidentDetailPage() {
               />
             </label>
           </div>
-        ) : isHighRisk ? (
+        ) : canExecute && isHighRisk ? (
           <label className="field">
             Analyst reason
             <input
@@ -354,13 +355,15 @@ export default function IncidentDetailPage() {
           <button className="button secondary" onClick={() => handleResponseActionDryRun(action.key)} disabled={busy}>
             Dry run
           </button>
-          <button
-            className={isHighRisk ? "button danger" : "button primary"}
-            onClick={() => handleResponseActionExecute(action)}
-            disabled={executeDisabled}
-          >
-            {adDryRun ? "Record dry-run confirmation" : "Execute"}
-          </button>
+          {canExecute ? (
+            <button
+              className={isHighRisk ? "button danger" : "button primary"}
+              onClick={() => handleResponseActionExecute(action)}
+              disabled={executeDisabled}
+            >
+              {adDryRun ? "Record dry-run confirmation" : "Execute"}
+            </button>
+          ) : null}
         </div>
       </article>
     );
@@ -420,18 +423,23 @@ export default function IncidentDetailPage() {
                         }
                       />
                     </div>
-                    {pending ? (
+                    {pending && (hasPermission(user, "approve_incidents") || hasPermission(user, "reject_incidents")) ? (
                       <div className="action-row" style={{ marginTop: 14 }}>
-                        <button className="button primary" onClick={() => runIncidentAction("approve")} disabled={busy}>
-                          Approve
-                        </button>
-                        <button className="button danger" onClick={() => runIncidentAction("reject")} disabled={busy}>
-                          Reject
-                        </button>
+                        {hasPermission(user, "approve_incidents") ? (
+                          <button className="button primary" onClick={() => runIncidentAction("approve")} disabled={busy}>
+                            Approve
+                          </button>
+                        ) : null}
+                        {hasPermission(user, "reject_incidents") ? (
+                          <button className="button danger" onClick={() => runIncidentAction("reject")} disabled={busy}>
+                            Reject
+                          </button>
+                        ) : null}
                       </div>
                     ) : null}
-                    {incident.is_archived ||
-                    (!pending && ["approved", "rejected", "processed"].includes((incident.status || "").toLowerCase())) ? (
+                    {hasPermission(user, "archive_incidents") &&
+                    (incident.is_archived ||
+                      (!pending && ["approved", "rejected", "processed"].includes((incident.status || "").toLowerCase()))) ? (
                       <div className="action-row" style={{ marginTop: 14 }}>
                         <button
                           className="button secondary"
@@ -497,19 +505,21 @@ export default function IncidentDetailPage() {
                       <h2>Analyst Notes</h2>
                       <span>{notes.length}</span>
                     </div>
-                    <form className="note-form" onSubmit={handleNoteSubmit}>
-                      <label className="field">
-                        Add note
-                        <textarea
-                          value={noteBody}
-                          onChange={(event) => setNoteBody(event.target.value)}
-                          placeholder="Document analyst observations, evidence, or closure rationale."
-                        />
-                      </label>
-                      <button className="button primary" disabled={busy || !noteBody.trim()} type="submit">
-                        Add note
-                      </button>
-                    </form>
+                    {hasPermission(user, "add_notes") ? (
+                      <form className="note-form" onSubmit={handleNoteSubmit}>
+                        <label className="field">
+                          Add note
+                          <textarea
+                            value={noteBody}
+                            onChange={(event) => setNoteBody(event.target.value)}
+                            placeholder="Document analyst observations, evidence, or closure rationale."
+                          />
+                        </label>
+                        <button className="button primary" disabled={busy || !noteBody.trim()} type="submit">
+                          Add note
+                        </button>
+                      </form>
+                    ) : null}
                     <div className="notes-list detail-scroll-list notes-scroll" style={{ marginTop: 14 }}>
                       {notes.length ? (
                         notes.map((note) => (
@@ -562,7 +572,7 @@ export default function IncidentDetailPage() {
                               onChange={(event) =>
                                 handleStepChange(step.id, event.target.value as PlaybookStep["status"])
                               }
-                              disabled={busy}
+                              disabled={busy || !hasPermission(user, "manage_playbooks")}
                               aria-label={`Status for step ${step.step_order}`}
                             >
                               {stepStatuses.map((status) => (
@@ -586,9 +596,11 @@ export default function IncidentDetailPage() {
                                   <li key={step}>{step}</li>
                                 ))}
                               </ul>
-                              <button className="button primary" onClick={handleCreatePlaybook} disabled={busy}>
-                                Create manual playbook
-                              </button>
+                              {hasPermission(user, "manage_playbooks") ? (
+                                <button className="button primary" onClick={handleCreatePlaybook} disabled={busy}>
+                                  Create manual playbook
+                                </button>
+                              ) : null}
                             </>
                           ) : (
                             "No playbook steps found."
@@ -677,6 +689,7 @@ export default function IncidentDetailPage() {
                     </div>
                   </section>
 
+                  {hasPermission(user, "view_response_actions") ? (
                   <section className="panel detail-response-card">
                     <div className="section-head">
                       <h2>Response Actions</h2>
@@ -691,7 +704,9 @@ export default function IncidentDetailPage() {
                         <h3>Suggested response actions</h3>
                         {groupedResponseActions.suggested.length ? (
                           <div className="response-action-list">
-                            {groupedResponseActions.suggested.map((action) => renderAvailableResponseAction(action, "suggested"))}
+                            {groupedResponseActions.suggested.map((action) =>
+                              renderAvailableResponseAction(action, "suggested", hasPermission(user, "execute_response_actions")),
+                            )}
                           </div>
                         ) : (
                           <div className="empty-state compact">No response actions are specifically suggested for this incident.</div>
@@ -702,7 +717,9 @@ export default function IncidentDetailPage() {
                         <div className="response-action-group secondary-group">
                           <h3>Other available actions</h3>
                           <div className="response-action-list">
-                            {groupedResponseActions.available.map((action) => renderAvailableResponseAction(action, "available"))}
+                            {groupedResponseActions.available.map((action) =>
+                              renderAvailableResponseAction(action, "available", hasPermission(user, "execute_response_actions")),
+                            )}
                           </div>
                         </div>
                       ) : null}
@@ -723,6 +740,7 @@ export default function IncidentDetailPage() {
                       ) : null}
                     </div>
                   </section>
+                  ) : null}
                 </div>
               </div>
             )}

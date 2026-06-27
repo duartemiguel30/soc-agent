@@ -3,12 +3,12 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { ReactNode, useEffect, useState, useSyncExternalStore } from "react";
-import { AdminUser, logout } from "@/lib/api";
+import { AdminUser, hasPermission, logout } from "@/lib/api";
 
 const navItems = [
-  { href: "/dashboard", label: "Dashboard" },
-  { href: "/incidents", label: "Incidents" },
-  { href: "/report", label: "Report" },
+  { href: "/dashboard", label: "Dashboard", permission: "view_dashboard" },
+  { href: "/incidents", label: "Incidents", permission: "view_incidents" },
+  { href: "/report", label: "Report", permission: "generate_report" },
 ];
 
 type AppShellProps = {
@@ -93,6 +93,8 @@ export function AppShell({ user, children }: AppShellProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const theme = useSyncExternalStore(subscribeTheme, readStoredTheme, () => "light");
   const nextTheme = theme === "light" ? "dark" : "light";
+  const visibleNavItems = navItems.filter((item) => hasPermission(user, item.permission));
+  const showAdminNav = hasPermission(user, "manage_users") || hasPermission(user, "view_audit");
 
   function toggleTheme() {
     writeStoredTheme(nextTheme);
@@ -175,7 +177,7 @@ export function AppShell({ user, children }: AppShellProps) {
               </button>
             </div>
             <nav className="nav-list" aria-label="Primary navigation">
-              {navItems.map((item) => (
+              {visibleNavItems.map((item) => (
                 <Link
                   key={item.href}
                   className={pathname === item.href ? "nav-link active" : "nav-link"}
@@ -185,6 +187,28 @@ export function AppShell({ user, children }: AppShellProps) {
                   {item.label}
                 </Link>
               ))}
+              {showAdminNav ? (
+                <>
+                  {hasPermission(user, "manage_users") ? (
+                    <Link
+                      className={pathname === "/admin/users" ? "nav-link active" : "nav-link"}
+                      href="/admin/users"
+                      onClick={() => setMenuOpen(false)}
+                    >
+                      Users
+                    </Link>
+                  ) : null}
+                  {hasPermission(user, "view_audit") ? (
+                    <Link
+                      className={pathname === "/admin/audit" ? "nav-link active" : "nav-link"}
+                      href="/admin/audit"
+                      onClick={() => setMenuOpen(false)}
+                    >
+                      Audit
+                    </Link>
+                  ) : null}
+                </>
+              ) : null}
             </nav>
 
             <div className="header-actions">
@@ -209,7 +233,8 @@ export function AppShell({ user, children }: AppShellProps) {
 
               <div className="session-card">
                 <span>Signed in</span>
-                <strong>{user.username}</strong>
+                <strong>{user.display_name || user.username}</strong>
+                {user.role ? <span>{user.role}</span> : null}
                 <button className="button ghost" onClick={handleLogout} disabled={loggingOut}>
                   {loggingOut ? "Logging out..." : "Logout"}
                 </button>

@@ -1647,6 +1647,76 @@ button:disabled {
   padding-left: 4px;
 }
 
+.admin-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  align-items: end;
+  gap: 12px;
+}
+
+.admin-table,
+.audit-mini-list {
+  display: grid;
+  gap: 10px;
+}
+
+.admin-row {
+  display: grid;
+  grid-template-columns: minmax(210px, 0.7fr) minmax(0, 1.3fr);
+  gap: 14px;
+  align-items: start;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  padding: 12px;
+}
+
+.admin-row-main,
+.admin-row-details,
+.admin-row-controls {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.admin-row-controls {
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  align-items: end;
+}
+
+.admin-row-details {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.audit-row {
+  grid-template-columns: minmax(0, 1fr) minmax(160px, 0.35fr);
+}
+
+.badge.role-super_admin {
+  border-color: rgba(37, 99, 235, 0.24);
+  background: var(--soft-blue);
+  color: var(--accent-strong);
+}
+
+.badge.role-admin {
+  border-color: rgba(16, 185, 129, 0.24);
+  background: var(--success-soft);
+  color: var(--success-text);
+}
+
+.badge.role-analyst {
+  border-color: rgba(217, 119, 6, 0.26);
+  background: var(--warning-soft);
+  color: var(--warning-text);
+}
+
+.badge.role-viewer {
+  border-color: var(--line);
+  background: var(--bg-strong);
+  color: var(--muted);
+}
+
 .detail-grid {
   display: grid;
   align-items: start;
@@ -2271,6 +2341,8 @@ button:disabled {
 
   .dashboard-grid,
   .dashboard-chart-grid,
+  .admin-row,
+  .audit-row,
   .detail-grid,
   .split-grid,
   .shortcut-grid,

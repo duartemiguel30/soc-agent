@@ -1,6 +1,6 @@
 "use client";
 
-import { archiveIncident, approveIncident, Incident, rejectIncident, unarchiveIncident } from "@/lib/api";
+import { AdminUser, archiveIncident, approveIncident, hasPermission, Incident, rejectIncident, unarchiveIncident } from "@/lib/api";
 import {
   formatIncidentDate,
   getSeverity,
@@ -21,6 +21,7 @@ type IncidentListProps = {
   onActionResult?: (message: string, type: "success" | "error") => void;
   linkToDetail?: boolean;
   showArchiveActions?: boolean;
+  user?: AdminUser;
 };
 
 export function IncidentList({
@@ -31,6 +32,7 @@ export function IncidentList({
   onActionResult,
   linkToDetail = true,
   showArchiveActions = true,
+  user,
 }: IncidentListProps) {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -89,7 +91,12 @@ export function IncidentList({
         const status = (incident.status || "").toLowerCase();
         const eventCount = incidentEventCount(incident);
         const showLastSeen = hasDistinctLastSeen(incident);
-        const canArchive = showArchiveActions && !pending && ["approved", "rejected", "processed"].includes(status);
+        const canApprove = hasPermission(user, "approve_incidents");
+        const canReject = hasPermission(user, "reject_incidents");
+        const canManageArchive =
+          hasPermission(user, "archive_incidents") &&
+          showArchiveActions &&
+          (incident.is_archived || (!pending && ["approved", "rejected", "processed"].includes(status)));
         return (
           <article key={incident.id} className="incident-card">
             <div className="incident-head">
@@ -172,31 +179,35 @@ export function IncidentList({
                     Open detail
                   </Link>
                 ) : null}
-                <button
-                  className="button primary"
-                  onClick={() => runAction(incident.id, "approve")}
-                  disabled={busyId === incident.id}
-                >
-                  Approve
-                </button>
-                <button
-                  className="button danger"
-                  onClick={() => runAction(incident.id, "reject")}
-                  disabled={busyId === incident.id}
-                >
-                  Reject
-                </button>
+                {canApprove ? (
+                  <button
+                    className="button primary"
+                    onClick={() => runAction(incident.id, "approve")}
+                    disabled={busyId === incident.id}
+                  >
+                    Approve
+                  </button>
+                ) : null}
+                {canReject ? (
+                  <button
+                    className="button danger"
+                    onClick={() => runAction(incident.id, "reject")}
+                    disabled={busyId === incident.id}
+                  >
+                    Reject
+                  </button>
+                ) : null}
               </div>
             ) : null}
 
-            {!pending && (linkToDetail || canArchive || incident.is_archived) ? (
+            {!pending && (linkToDetail || canManageArchive) ? (
               <div className="action-row">
                 {linkToDetail ? (
                   <Link className="button secondary" href={`/incidents/${incident.id}`}>
                     Open detail
                   </Link>
                 ) : null}
-                {canArchive || incident.is_archived ? (
+                {canManageArchive ? (
                   <button
                     className="button secondary"
                     onClick={() => runArchiveAction(incident.id, incident.is_archived)}

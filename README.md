@@ -8,9 +8,9 @@ The backend is FastAPI with SQLite persistence. The primary admin UI is the Next
 
 - Public Wazuh webhook ingestion at `POST /webhook/wazuh`.
 - Gemini/LangGraph alert enrichment and classification.
-- SQLite-backed incidents, correlated alert events, admin users, admin sessions, notes, archive state, manual playbooks, action history, and observables.
-- Admin authentication with opaque HttpOnly session cookies.
-- Next.js admin console for dashboard, incidents, archive, incident detail, notes, playbooks, response actions, and report generation.
+- SQLite-backed incidents, correlated alert events, admin users, admin sessions, admin audit events, notes, archive state, manual playbooks, action history, and observables.
+- Multi-user admin authentication with opaque HttpOnly session cookies, RBAC roles, and sliding idle-session expiration.
+- Next.js admin console for dashboard, incidents, archive, incident detail, notes, playbooks, response actions, report generation, user management, and admin audit review.
 - Clean light/dark admin-console UI theme with centralized CSS variables for quick browser tuning.
 - Dashboard analytics for alert/event evolution, MITRE distribution, top agents, severity, and decisions.
 - Additive incident observables extracted from Wazuh/Sysmon payloads.
@@ -28,7 +28,7 @@ This project is intentionally conservative.
 - Wazuh ingestion does not execute response actions.
 - Incident detail viewing is read-only unless the analyst explicitly submits notes, creates a playbook, changes checklist state, archives/unarchives, approves/rejects, or executes a response action.
 - Manual playbooks are created only by `POST /incidents/{id}/playbook`.
-- Response action dry-run previews are not logged to avoid noisy history.
+- Response action dry-run previews are logged only to admin audit events, not incident action history.
 - Explicit response action execute attempts are audited.
 - `response_action_executed` is reserved for real executed actions.
 - `response_action_dry_run_confirmed` records analyst-confirmed simulations where no real system state changed.
@@ -60,6 +60,17 @@ AD_PROTECTED_USERS=Administrator,admin,krbtgt,vagrant,Domain Admins,Enterprise A
 `AUTH_COOKIE_SECURE=false` is for local HTTP lab use. Set it to `true` behind HTTPS.
 
 `SESSION_IDLE_TIMEOUT_MINUTES` controls admin inactivity timeout. The default is 30 minutes. Each authenticated request refreshes `last_activity_at` and extends `expires_at`; inactivity beyond the configured minutes requires logging in again. `SESSION_TTL_HOURS` is still accepted as a legacy fallback when `SESSION_IDLE_TIMEOUT_MINUTES` is missing, but new environments should use `SESSION_IDLE_TIMEOUT_MINUTES`.
+
+## Admin RBAC
+
+Admin users have one of four roles:
+
+- `super_admin`: full access, including user management, audit review, settings, incident actions, playbooks, notes, response actions, and report generation.
+- `admin`: incident operations, playbooks, notes, response action execution, reports, and audit review. Admins cannot manage users.
+- `analyst`: dashboard/incidents, triage work, playbooks, notes, response action previews, and reports. Analysts cannot manage users or execute response actions.
+- `viewer`: dashboard/incidents and report generation only.
+
+Backend permission checks are authoritative. The frontend hides unavailable controls and navigation, but forbidden API calls still return `403` and create a `permission_denied` admin audit event.
 
 `INCIDENT_CORRELATION_WINDOW_MINUTES` controls how long repeated related Wazuh alerts are grouped into an existing active incident. The default is 15 minutes.
 
@@ -95,25 +106,39 @@ Open SQLite:
 sqlite3 incidents.db
 ```
 
-Insert the admin row using the generated hash:
+Insert the first admin row using the generated hash:
 
 ```sql
-INSERT INTO admin_users (username, password_hash, role, is_active)
-VALUES ('admin', '<generated_hash>', 'admin', 1);
+INSERT INTO admin_users (username, password_hash, display_name, role, is_active)
+VALUES ('admin', '<generated_hash>', 'SOC Admin', 'super_admin', 1);
 ```
 
 Verify users and sessions:
 
 ```sql
-SELECT id, username, role, is_active, created_at FROM admin_users;
+SELECT id, username, display_name, role, is_active, created_at, last_login_at FROM admin_users;
 SELECT id, admin_user_id, created_at, last_activity_at, expires_at, revoked_at FROM admin_sessions;
+SELECT id, created_at, actor_username, event_type, target_username, success FROM admin_audit_events ORDER BY id DESC LIMIT 20;
 ```
 
 The browser receives only an opaque HttpOnly session cookie. SQLite stores only `token_hash`, never the raw session token. Admin sessions use sliding idle expiration: active use refreshes `last_activity_at`, `expires_at`, and the cookie max age; logout sets `revoked_at` immediately.
 
+Existing single-user databases are migrated safely at startup. If no active `super_admin` exists, the first active admin user is promoted to `super_admin` so user management remains reachable.
+
 ## Database Tables
 
-FastAPI calls `Base.metadata.create_all(bind=engine)` on startup and safely adds the auth-only `admin_sessions.last_activity_at` column when needed for existing SQLite databases. After pulling schema changes onto the logger VM, you can manually verify/create runtime tables:
+FastAPI calls `Base.metadata.create_all(bind=engine)` on startup and safely adds missing admin-only columns for existing SQLite databases:
+
+- `admin_users.display_name`
+- `admin_users.role`
+- `admin_users.is_active`
+- `admin_users.created_at`
+- `admin_users.updated_at`
+- `admin_users.last_login_at`
+- `admin_users.created_by`
+- `admin_sessions.last_activity_at`
+
+It also creates `admin_audit_events` when missing. After pulling schema changes onto the logger VM, you can manually verify/create runtime tables:
 
 ```bash
 cd ~/soc-agent
@@ -244,32 +269,42 @@ Session routes:
 
 - `POST /auth/login`: public login route.
 - `POST /auth/logout`: clears or revokes the session cookie when present.
-- `GET /auth/me`: requires a valid admin session.
+- `GET /auth/me`: requires a valid admin session and returns `username`, `display_name`, `role`, and `permissions`.
 
-Incident, report, and response routes require admin session authentication:
+Admin routes:
 
-- `GET /incidents`
-- `GET /incidents/pending`
-- `GET /incidents/archive`
-- `GET /incidents/{id}`
-- `GET /incidents/{id}/alert-events`
-- `GET /incidents/{id}/observables`
-- `GET /incidents/{id}/response-actions`
-- `POST /incidents/{id}/response-actions/{action_key}/dry-run`
-- `POST /incidents/{id}/response-actions/{action_key}/execute`
-- `GET /incidents/{id}/playbook`
-- `POST /incidents/{id}/playbook`
-- `PATCH /playbook/steps/{step_id}`
-- `GET /incidents/{id}/notes`
-- `POST /incidents/{id}/notes`
-- `GET /incidents/{id}/timeline`
-- `GET /incidents/{id}/actions`
-- `POST /incidents/{id}/archive`
-- `POST /incidents/{id}/unarchive`
-- `POST /incidents/{id}/approve`
-- `POST /incidents/{id}/reject`
-- `GET /analytics/alert-evolution`
-- `GET /report`
+- `GET /admin/users`: list admin users. Requires `manage_users`.
+- `POST /admin/users`: create an admin user. Requires `manage_users`.
+- `GET /admin/users/{user_id}`: read one admin user. Requires `manage_users`.
+- `PATCH /admin/users/{user_id}`: update display name, role, or active state. Requires `manage_users`.
+- `POST /admin/users/{user_id}/reset-password`: reset an admin password. Requires `manage_users`.
+- `POST /admin/users/{user_id}/disable`: disable login for a user. Requires `manage_users`.
+- `POST /admin/users/{user_id}/enable`: re-enable login for a user. Requires `manage_users`.
+- `GET /admin/audit-events`: filter admin audit events. Requires `view_audit`.
+- `GET /admin/audit-metrics`: admin audit metrics. Requires `view_audit`.
+
+Admin user safeguards:
+
+- Usernames are unique.
+- Roles must be `super_admin`, `admin`, `analyst`, or `viewer`.
+- Users are disabled instead of deleted.
+- Disabled users cannot log in.
+- The last active `super_admin` cannot be disabled or demoted.
+- Password hashes are never returned by the API.
+
+Incident, report, analytics, and response routes require admin session authentication plus RBAC permissions:
+
+- Dashboard/analytics data: `view_dashboard` or `view_incidents`, depending on endpoint.
+- Incident lists/details/timeline/notes/actions: `view_incidents`.
+- Approve/reject: `approve_incidents` / `reject_incidents`.
+- Archive/unarchive: `archive_incidents`.
+- Notes: `add_notes` for creation; viewing remains `view_incidents`.
+- Playbook creation and step updates: `manage_playbooks`.
+- Response action details and dry-run preview: `view_response_actions`.
+- Response action execute or confirmed dry-run: `execute_response_actions`.
+- Report generation: `generate_report`.
+
+Admin audit events are created for login success/failure, logout, session expiry, user management, permission denial, incident approve/reject/archive/unarchive, notes, playbook changes, response action dry-runs/execution/failures, and report generation. Normal read-only page views are not logged.
 
 Other public routes:
 
@@ -305,6 +340,11 @@ http://192.168.56.105:3000
 ```
 
 The UI supports a clean light/dark theme toggle in the header and mobile drawer. The selected theme is stored in `localStorage` under `soc_theme`; auth tokens are not stored in browser storage. Theme colors are centralized in `frontend/app/globals.css` under `:root` and `:root[data-theme="dark"]`; the fastest presentation-prep variables to adjust are `--bg`, `--panel`, `--line`, `--text`, `--muted`, `--accent`, `--accent-strong`, and the severity variables.
+
+The header shows the current user and role. Navigation and mutating controls are hidden when the authenticated user lacks the required permission, while backend RBAC remains authoritative. Admin pages are:
+
+- `/admin/users`: super-admin user management with create, role/display-name update, enable/disable, and password reset.
+- `/admin/audit`: audit metrics, filtered audit event review, and progressive loading.
 
 Dashboard distribution charts are computed in the frontend from existing incident API responses. They use fields such as `severity`, `decision`, `mitre_technique`, `agent_name`, `event_count`, `first_seen`, `last_seen`, and `created_at`.
 
