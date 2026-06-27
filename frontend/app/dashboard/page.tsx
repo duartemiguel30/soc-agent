@@ -277,7 +277,7 @@ export default function DashboardPage() {
                 <span>Auto processed</span>
                 <strong>{counts.processed}</strong>
               </Link>
-              <Link className="metric-card metric-link" href="/archive">
+              <Link className="metric-card metric-link" href="/incidents?archived=true">
                 <span>Archived</span>
                 <strong>{archivedCount}</strong>
               </Link>
@@ -293,7 +293,7 @@ export default function DashboardPage() {
 
             <section className="dashboard-chart-grid" aria-label="Dashboard incident charts">
               <div className="panel chart-panel chart-evolution">
-                <AlertEvolutionExplorer compact titleLink />
+                <AlertEvolutionExplorer mode="compact" titleLink />
               </div>
 
               <div className="panel chart-panel chart-donut-panel chart-severity">
@@ -336,14 +336,20 @@ export default function DashboardPage() {
             <section className="panel severity-strip-panel">
               <div className="section-head">
                 <h2>Stored Severity Summary</h2>
-                <span>{storedCount} stored</span>
+                <Link className="section-head-link" href="/incidents?archived=all">
+                  {storedCount} stored
+                </Link>
               </div>
               <div className="metric-grid compact-metrics">
                 {Object.entries(severityDistribution).map(([severity, count]) => (
-                  <div key={severity} className="metric-card compact">
+                  <Link
+                    className="metric-card compact metric-link"
+                    href={incidentFilterHref({ archived: "all", severity })}
+                    key={severity}
+                  >
                     <span>{labelValue(severity)}</span>
                     <strong>{count}</strong>
-                  </div>
+                  </Link>
                 ))}
               </div>
             </section>
@@ -351,21 +357,23 @@ export default function DashboardPage() {
             <section className="panel">
               <div className="section-head">
                 <h2>Active Decision Metrics</h2>
-                <span>Current incident set</span>
+                <Link className="section-head-link" href="/incidents?archived=false">
+                  Current incident set
+                </Link>
               </div>
               <div className="metric-grid compact-metrics">
-                <div className="metric-card compact">
+                <Link className="metric-card compact metric-link" href="/incidents?archived=false&decision=critical_alert">
                   <span>Critical alert decisions</span>
                   <strong>{counts.criticalDecision}</strong>
-                </div>
-                <div className="metric-card compact">
+                </Link>
+                <Link className="metric-card compact metric-link" href="/incidents?archived=false&decision=human_review">
                   <span>Human review decisions</span>
                   <strong>{counts.humanReviewDecision}</strong>
-                </div>
-                <div className="metric-card compact">
+                </Link>
+                <Link className="metric-card compact metric-link" href="/incidents?archived=false&decision=auto_response">
                   <span>Auto response decisions</span>
                   <strong>{counts.autoResponseDecision}</strong>
-                </div>
+                </Link>
               </div>
             </section>
 
@@ -380,7 +388,7 @@ export default function DashboardPage() {
                   <strong>{counts.pending}</strong>
                   <p>Review active incidents that need analyst approval or rejection.</p>
                 </Link>
-                <Link className="shortcut-card" href="/archive">
+                <Link className="shortcut-card" href="/incidents?archived=true">
                   <span>Archive</span>
                   <strong>{archivedCount}</strong>
                   <p>Search and restore incidents removed from active operational views.</p>

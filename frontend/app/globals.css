@@ -604,10 +604,11 @@ button:disabled {
   display: grid;
   align-items: start;
   grid-template-areas:
-    "evolution severity"
+    "evolution evolution"
+    "mitre severity"
     "mitre decision"
     "mitre agents";
-  grid-template-columns: minmax(0, 1.55fr) minmax(280px, 0.65fr);
+  grid-template-columns: minmax(0, 1.35fr) minmax(300px, 0.65fr);
   gap: 14px;
   margin-bottom: 18px;
 }
@@ -688,7 +689,7 @@ button:disabled {
 .evolution-control-row {
   display: grid;
   align-items: end;
-  grid-template-columns: minmax(140px, 180px) minmax(160px, 220px) auto;
+  grid-template-columns: repeat(auto-fit, minmax(170px, max-content));
   gap: 10px;
 }
 
@@ -698,6 +699,7 @@ button:disabled {
 
 .chart-nav {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
 }
@@ -727,22 +729,107 @@ button:disabled {
   display: grid;
   align-items: end;
   grid-auto-flow: column;
-  grid-auto-columns: minmax(54px, 1fr);
+  grid-auto-columns: minmax(62px, 62px);
   gap: 10px;
   min-height: 126px;
-  overflow-x: auto;
   padding: 4px 2px 0;
+  width: max-content;
+  min-width: 100%;
+}
+
+.chart-scroll-shell {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.chart-scroll-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.chart-scroll-button {
+  min-height: 30px;
+  padding: 5px 9px;
+}
+
+.chart-scroll-viewport {
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0 2px 8px;
+  scrollbar-color: var(--line-strong) var(--panel-soft);
+  scrollbar-width: thin;
+}
+
+.chart-scroll-viewport::-webkit-scrollbar {
+  height: 10px;
+}
+
+.chart-scroll-viewport::-webkit-scrollbar-track {
+  background: var(--panel-soft);
+  border-radius: 999px;
+}
+
+.chart-scroll-viewport::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: 999px;
 }
 
 .evolution-bar-chart {
   min-height: 150px;
 }
 
+.timeline-grid-full {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
+  gap: 14px 12px;
+  width: 100%;
+  min-width: 0;
+  padding-top: 8px;
+}
+
+.full-evolution {
+  display: grid;
+  gap: 18px;
+}
+
+.full-evolution .section-head {
+  margin-bottom: 2px;
+}
+
+.full-evolution .evolution-controls {
+  margin-bottom: 4px;
+}
+
+.full-evolution .bar-column {
+  min-width: 0;
+  min-height: 178px;
+  align-content: end;
+  padding: 4px;
+}
+
+.full-evolution .bar-track {
+  height: 118px;
+}
+
+.full-evolution .bar-column strong {
+  font-size: 0.95rem;
+}
+
+.full-evolution .bar-column span {
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+
 .bar-column {
   display: grid;
   align-items: end;
   gap: 7px;
-  min-width: 54px;
+  min-width: 62px;
   text-align: center;
 }
 
@@ -928,6 +1015,14 @@ button:disabled {
   min-height: 360px;
 }
 
+.alert-timeline-panel {
+  padding: 22px;
+}
+
+.alerts-analytics-page .analytics-panel {
+  margin-bottom: 0;
+}
+
 .analytics-table {
   display: grid;
   gap: 10px;
@@ -999,6 +1094,15 @@ button:disabled {
 
 .section-head span {
   color: var(--muted);
+}
+
+.section-head-link {
+  color: var(--accent-strong);
+  font-weight: 800;
+}
+
+.section-head-link:hover {
+  text-decoration: underline;
 }
 
 .incident-list {
@@ -1433,23 +1537,23 @@ button:disabled {
 }
 
 .detail-scroll-list {
-  overflow: auto;
+  overflow: visible;
   padding-right: 4px;
   scrollbar-gutter: stable;
 }
 
 .alert-scroll {
-  max-height: 420px;
+  max-height: none;
 }
 
 .timeline-scroll,
 .history-scroll {
-  max-height: 320px;
+  max-height: none;
 }
 
 .notes-scroll,
 .playbook-scroll {
-  max-height: 360px;
+  max-height: none;
 }
 
 .detail-overview-card {
@@ -1944,7 +2048,8 @@ button:disabled {
   .dashboard-chart-grid {
     grid-template-areas:
       "evolution evolution"
-      "severity decision"
+      "mitre severity"
+      "mitre decision"
       "mitre agents";
   }
 

@@ -61,6 +61,7 @@ export type AlertEvolutionResponse = {
   window_start?: string | null;
   window_end?: string | null;
   window_label: string;
+  mode?: "rolling" | "anchored";
   points: AlertEvolutionPoint[];
   total: number;
   data_start?: string | null;

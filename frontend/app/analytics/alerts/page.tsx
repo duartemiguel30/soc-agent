@@ -9,7 +9,7 @@ export default function AlertTimelinePage() {
     <AuthGuard>
       {(user) => (
         <AppShell user={user}>
-          <main className="page">
+          <main className="page alerts-analytics-page">
             <div className="page-header">
               <div>
                 <p className="eyebrow">Analytics</p>
@@ -17,8 +17,8 @@ export default function AlertTimelinePage() {
               </div>
             </div>
 
-            <section className="panel analytics-panel">
-              <AlertEvolutionExplorer />
+            <section className="panel analytics-panel alert-timeline-panel">
+              <AlertEvolutionExplorer mode="full" />
             </section>
           </main>
         </AppShell>

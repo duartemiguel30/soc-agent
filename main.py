@@ -309,11 +309,40 @@ def start_of_month(value: datetime) -> datetime:
     return datetime(value.year, value.month, 1)
 
 
+def start_of_year(value: datetime) -> datetime:
+    return datetime(value.year, 1, 1)
+
+
 def add_months(value: datetime, months: int) -> datetime:
     month_index = value.month - 1 + months
     year = value.year + month_index // 12
     month = month_index % 12 + 1
     return datetime(year, month, 1)
+
+
+def days_in_month(year: int, month: int) -> int:
+    next_month = datetime(year + 1, 1, 1) if month == 12 else datetime(year, month + 1, 1)
+    return (next_month - timedelta(days=1)).day
+
+
+def add_months_preserve_time(value: datetime, months: int) -> datetime:
+    month_index = value.month - 1 + months
+    year = value.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(value.day, days_in_month(year, month))
+    return datetime(year, month, day, value.hour, value.minute, value.second, value.microsecond)
+
+
+def same_day(left: datetime, right: datetime) -> bool:
+    return left.date() == right.date()
+
+
+def same_month(left: datetime, right: datetime) -> bool:
+    return left.year == right.year and left.month == right.month
+
+
+def same_year(left: datetime, right: datetime) -> bool:
+    return left.year == right.year
 
 
 def alert_evolution_window(range_name: str, anchor: str | None, timestamps: list[datetime]) -> tuple[datetime | None, datetime | None]:
@@ -324,19 +353,33 @@ def alert_evolution_window(range_name: str, anchor: str | None, timestamps: list
         last_year = max(timestamps).year
         return datetime(first_year, 1, 1), datetime(last_year + 1, 1, 1)
 
+    now = utc_now()
+    if not anchor:
+        if range_name == "24h":
+            return now - timedelta(hours=24), now
+        if range_name == "7d":
+            return now - timedelta(days=7), now
+        if range_name == "1m":
+            return add_months_preserve_time(now, -1), now
+        if range_name == "1y":
+            return add_months_preserve_time(now, -12), now
+
     anchor_date = parse_evolution_anchor(anchor)
     if range_name == "24h":
         start = start_of_day(anchor_date)
-        return start, start + timedelta(days=1)
+        end = now if same_day(anchor_date, now) else start + timedelta(days=1)
+        return start, end
     if range_name == "7d":
-        start = start_of_week(anchor_date)
-        return start, start + timedelta(days=7)
+        end = now if same_day(anchor_date, now) else start_of_day(anchor_date) + timedelta(days=1)
+        return end - timedelta(days=7), end
     if range_name == "1m":
         start = start_of_month(anchor_date)
-        return start, add_months(start, 1)
+        end = now if same_month(anchor_date, now) else add_months(start, 1)
+        return start, end
     if range_name == "1y":
-        start = datetime(anchor_date.year, 1, 1)
-        return start, datetime(anchor_date.year + 1, 1, 1)
+        start = start_of_year(anchor_date)
+        end = now if same_year(anchor_date, now) else datetime(anchor_date.year + 1, 1, 1)
+        return start, end
     return None, None
 
 
@@ -366,13 +409,22 @@ def alert_evolution_bucket_label(value: datetime, bucket: str) -> str:
     return value.strftime("%Y")
 
 
-def alert_evolution_window_label(range_name: str, start: datetime | None, end: datetime | None) -> str:
+def alert_evolution_window_label(range_name: str, start: datetime | None, end: datetime | None, anchored: bool) -> str:
     if not start or not end:
         return "No stored events"
+    if not anchored:
+        if range_name == "24h":
+            return "Last 24 hours"
+        if range_name == "7d":
+            return "Last 7 days"
+        if range_name == "1m":
+            return "Last month"
+        if range_name == "1y":
+            return "Last year"
     if range_name == "24h":
         return start.strftime("%d/%m/%Y")
     if range_name == "7d":
-        return f"Week of {start.strftime('%d/%m/%Y')}"
+        return f"Week ending {(end - timedelta(seconds=1)).strftime('%d/%m/%Y')}"
     if range_name == "1m":
         return start.strftime("%B %Y")
     if range_name == "1y":
@@ -1073,6 +1125,7 @@ def get_alert_evolution(
 
     timestamps = sorted(alert_evolution_records(db, archived))
     window_start, window_end = alert_evolution_window(range_name, anchor, timestamps)
+    anchored = bool(anchor and range_name != "all")
 
     points = []
     if window_start and window_end:
@@ -1096,7 +1149,8 @@ def get_alert_evolution(
         "archived": (archived or "all").lower(),
         "window_start": window_start,
         "window_end": window_end,
-        "window_label": alert_evolution_window_label(range_name, window_start, window_end),
+        "window_label": alert_evolution_window_label(range_name, window_start, window_end, anchored),
+        "mode": "anchored" if anchored else "rolling",
         "points": points,
         "total": sum(point["count"] for point in points),
         "data_start": min(timestamps) if timestamps else None,

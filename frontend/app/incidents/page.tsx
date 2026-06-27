@@ -55,9 +55,9 @@ const levelOptions = [
 ] as const;
 
 const archiveOptions = [
-  { value: "false", label: "Active incidents" },
-  { value: "all", label: "Active + archived" },
-  { value: "true", label: "Archived only" },
+  { value: "false", label: "Active" },
+  { value: "true", label: "Archived" },
+  { value: "all", label: "All" },
 ] as const;
 
 const archiveValues = archiveOptions.map((option) => option.value);

@@ -314,7 +314,9 @@ The evolution explorer supports:
 - `1y` with weekly or monthly buckets.
 - `All` with yearly buckets.
 
-Previous/next navigation is disabled when no stored event exists outside the current selected period. No heavy chart dependency is used; charts are plain React, CSS, and SVG. The dashboard uses a compact responsive analytics grid for event evolution, severity, MITRE, decision, and agent distributions.
+By default, the range buttons use rolling windows relative to the current time: last 24 hours, last 7 days, last month, and last year. Choosing a date, month, or year switches the explorer into an anchored view for that selected period; `Reset to now` returns to the rolling window.
+
+Previous/next navigation is disabled when no stored event exists outside the current selected period. No heavy chart dependency is used; charts are plain React, CSS, and SVG. The dashboard uses a compact responsive analytics grid for event evolution, severity, MITRE, decision, and agent distributions. The dashboard timeline uses compact contained scrolling when buckets do not fit, while `/analytics/alerts` uses an expanded wrapped timeline view that avoids internal horizontal scrollbars and spends vertical page space instead.
 
 Dashboard metric semantics are explicit:
 
@@ -324,13 +326,15 @@ Dashboard metric semantics are explicit:
 
 Dashboard metric cards and chart rows link to filtered internal views. Severity, decision, MITRE technique, and agent drilldowns open `/incidents` with query-param initialized filters. The incidents page supports `archived`, `status`, `severity`, `classification`, `decision`, `rule_level`, `mitre`, `agent`, and `q` query params.
 
+The `/incidents` page is the main active/archive workflow. Its Archive scope filter supports Active (`archived=false`), Archived (`archived=true`), and All (`archived=all`), with Active as the default. The legacy `/archive` route remains available as a compatibility shortcut and redirects to `/incidents?archived=true`.
+
 Mobile navigation uses a polished right-side drawer with an overlay; the theme toggle and logout remain inside the drawer. Incident detail uses explicit responsive columns on desktop to avoid large grid gaps, with long activity/history/playbook/note lists scrolling internally for balance, then collapses to one ordered column on narrow screens.
 
 Current UI pages:
 
 - `/dashboard`: operational metrics, event/alert evolution, MITRE distribution, top agents, severity distribution, decision distribution, and navigation shortcuts.
-- `/incidents`: active incident triage, filtering, approve/reject, archive, and detail links.
-- `/archive`: archived incident search, filtering, event aggregation metadata, and unarchive.
+- `/incidents`: active/archived/all incident triage with archive scope filtering, approve/reject, archive/unarchive, and detail links.
+- `/archive`: compatibility shortcut to `/incidents?archived=true`.
 - `/incidents/{id}`: read-only incident fields plus alert activity, observables, response actions, manual playbook, notes, timeline, and action history in a responsive two-column/masonry-style desktop layout.
 - `/analytics/alerts`: read-only full alert/event timeline explorer using active plus archived history by default.
 - `/analytics/mitre`: read-only full MITRE ATT&CK distribution, sorted by alert-event weighted count.
