@@ -70,6 +70,21 @@ export type AlertEvolutionResponse = {
   can_go_next: boolean;
 };
 
+export type AlertPeriodItem = {
+  kind: "alert_event" | "incident_fallback";
+  timestamp?: string | null;
+  incident: Incident;
+  event?: IncidentAlertEvent | null;
+};
+
+export type AlertPeriodResponse = {
+  from?: string | null;
+  to?: string | null;
+  archived: "all" | "true" | "false";
+  total: number;
+  items: AlertPeriodItem[];
+};
+
 export type IncidentArchiveState = {
   id: number;
   incident_id: string;
@@ -253,8 +268,18 @@ export function getCurrentUser() {
   return request<AdminUser>("/auth/me");
 }
 
-export function listIncidents(archived: "all" | "true" | "false" = "all") {
-  return request<Incident[]>(`/incidents?archived=${archived}`);
+export function listIncidents(
+  archived: "all" | "true" | "false" = "all",
+  range?: { from?: string | null; to?: string | null },
+) {
+  const search = new URLSearchParams({ archived });
+  if (range?.from) {
+    search.set("from", range.from);
+  }
+  if (range?.to) {
+    search.set("to", range.to);
+  }
+  return request<Incident[]>(`/incidents?${search.toString()}`);
 }
 
 export function getAlertEvolution(params: {
@@ -272,6 +297,15 @@ export function getAlertEvolution(params: {
     search.set("anchor", params.anchor);
   }
   return request<AlertEvolutionResponse>(`/analytics/alert-evolution?${search.toString()}`);
+}
+
+export function getAlertPeriod(params: { from: string; to: string; archived?: "all" | "true" | "false" }) {
+  const search = new URLSearchParams({
+    from: params.from,
+    to: params.to,
+    archived: params.archived || "all",
+  });
+  return request<AlertPeriodResponse>(`/analytics/alert-period?${search.toString()}`);
 }
 
 export function getIncident(id: string) {

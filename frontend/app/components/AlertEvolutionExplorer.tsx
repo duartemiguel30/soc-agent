@@ -44,7 +44,7 @@ const bucketLabels: Record<AlertEvolutionBucket, string> = {
 };
 
 function queryRange(value: string | null): AlertEvolutionRange {
-  return value === "24h" || value === "7d" || value === "1m" || value === "1y" || value === "all" ? value : "1m";
+  return value === "24h" || value === "7d" || value === "1m" || value === "1y" || value === "all" ? value : "24h";
 }
 
 function queryBucket(value: string | null, range: AlertEvolutionRange): AlertEvolutionBucket {
@@ -108,6 +108,23 @@ function timelineHref(range: AlertEvolutionRange, bucket: AlertEvolutionBucket, 
   return `/analytics/alerts?${search.toString()}`;
 }
 
+function bucketDetailHref(mode: "compact" | "full", bucket: AlertEvolutionBucket, item: AlertEvolutionPoint) {
+  if (mode === "compact") {
+    const search = new URLSearchParams({
+      archived: "all",
+      from: item.start,
+      to: item.end,
+    });
+    return `/incidents?${search.toString()}`;
+  }
+  const search = new URLSearchParams({
+    bucket,
+    start: item.start,
+    end: item.end,
+  });
+  return `/analytics/alerts/detail?${search.toString()}`;
+}
+
 function TimelineBarChart({
   data,
   loading,
@@ -115,6 +132,7 @@ function TimelineBarChart({
   bucket,
   interactive,
   mode,
+  anchored,
 }: {
   data: AlertEvolutionPoint[];
   loading: boolean;
@@ -122,12 +140,26 @@ function TimelineBarChart({
   bucket: AlertEvolutionBucket;
   interactive: boolean;
   mode: "compact" | "full";
+  anchored: boolean;
 }) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const max = Math.max(...data.map((item) => item.count), 1);
   const hasData = data.some((item) => item.count > 0);
 
-  if (loading) {
+  useEffect(() => {
+    if (mode !== "compact" || loading || anchored || !viewportRef.current) {
+      return;
+    }
+    const frame = window.requestAnimationFrame(() => {
+      const viewport = viewportRef.current;
+      if (viewport) {
+        viewport.scrollLeft = viewport.scrollWidth;
+      }
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [anchored, data, loading, mode]);
+
+  if (loading && !hasData) {
     return <EmptyChart>Loading alert events...</EmptyChart>;
   }
 
@@ -135,11 +167,9 @@ function TimelineBarChart({
     return <EmptyChart />;
   }
 
-  const scrollChart = (direction: -1 | 1) => {
-    viewportRef.current?.scrollBy({ left: direction * 280, behavior: "smooth" });
-  };
-
   const columns = data.map((item) => {
+    const canNavigate = interactive && item.count > 0;
+    const ariaLabel = `Open alerts for ${item.label}, ${item.count} events`;
     const content = (
       <>
         <div className="bar-track" aria-label={`${item.label}: ${item.count}`}>
@@ -149,17 +179,19 @@ function TimelineBarChart({
         <span>{item.label}</span>
       </>
     );
-    return interactive ? (
+    return canNavigate ? (
       <Link
         className="bar-column bar-column-link"
-        href={timelineHref(range, bucket, item.start.slice(0, 10))}
+        aria-label={ariaLabel}
+        href={bucketDetailHref(mode, bucket, item)}
         key={item.start}
         role="listitem"
+        title={ariaLabel}
       >
         {content}
       </Link>
     ) : (
-      <div className="bar-column" key={item.start} role="listitem">
+      <div className="bar-column bar-column-disabled" key={item.start} role="listitem">
         {content}
       </div>
     );
@@ -167,27 +199,21 @@ function TimelineBarChart({
 
   if (mode === "full") {
     return (
-      <div className="timeline-grid-full" role="list">
+      <div className={loading ? "timeline-grid-full chart-updating" : "timeline-grid-full"} role="list">
         {columns}
+        {loading ? <span className="timeline-loading">Updating...</span> : null}
       </div>
     );
   }
 
   return (
-    <div className="chart-scroll-shell">
-      <div className="chart-scroll-actions" aria-label="Chart scrolling">
-        <button className="button ghost chart-scroll-button" onClick={() => scrollChart(-1)} type="button">
-          Left
-        </button>
-        <button className="button ghost chart-scroll-button" onClick={() => scrollChart(1)} type="button">
-          Right
-        </button>
-      </div>
+    <div className={loading ? "chart-scroll-shell chart-updating" : "chart-scroll-shell"}>
       <div className="chart-scroll-viewport" ref={viewportRef}>
         <div className="bar-chart evolution-bar-chart" role="list">
           {columns}
         </div>
       </div>
+      {loading ? <span className="timeline-loading">Updating...</span> : null}
     </div>
   );
 }
@@ -282,6 +308,9 @@ function AlertEvolutionExplorerContent({
   const showBucketSelector = bucketOptionsByRange[range].length > 1;
   const showDatePicker = range !== "all";
   const compact = mode === "compact";
+  const displayAnchor = anchor || toDateInputValue(new Date());
+  const showCalendarValue = anchored || range === "1m" || range === "1y";
+  const resetLabel = range === "1m" ? "Current month" : range === "1y" ? "Current year" : "Reset to now";
 
   return (
     <div className={compact ? "alert-evolution compact-evolution" : "alert-evolution full-evolution"}>
@@ -297,6 +326,7 @@ function AlertEvolutionExplorerContent({
           {rangeOptions.map((option) => (
             <button
               className={range === option.value ? "active" : ""}
+              disabled={loading}
               key={option.value}
               onClick={() => handleRangeChange(option.value)}
               type="button"
@@ -310,7 +340,11 @@ function AlertEvolutionExplorerContent({
           {showBucketSelector ? (
             <label className="field compact-field">
               Resolution
-              <select value={bucket} onChange={(event) => setBucket(event.target.value as AlertEvolutionBucket)}>
+              <select
+                disabled={loading}
+                value={bucket}
+                onChange={(event) => setBucket(event.target.value as AlertEvolutionBucket)}
+              >
                 {bucketOptionsByRange[range].map((option) => (
                   <option key={option} value={option}>
                     {bucketLabels[option]}
@@ -331,9 +365,10 @@ function AlertEvolutionExplorerContent({
               <input
                 max={range === "1y" ? "9999" : undefined}
                 min={range === "1y" ? "1970" : undefined}
+                disabled={loading}
                 onChange={(event) => handleAnchorChange(event.target.value)}
                 type={range === "1m" ? "month" : range === "1y" ? "number" : "date"}
-                value={anchored ? evolutionAnchorValue(range, anchor) : ""}
+                value={showCalendarValue ? evolutionAnchorValue(range, displayAnchor) : ""}
               />
             </label>
           ) : null}
@@ -358,7 +393,7 @@ function AlertEvolutionExplorerContent({
               </button>
               {anchored ? (
                 <button className="button ghost" onClick={resetToNow} type="button">
-                  Reset to now
+                  {resetLabel}
                 </button>
               ) : null}
             </div>
@@ -373,6 +408,7 @@ function AlertEvolutionExplorerContent({
         bucket={bucket}
         interactive
         mode={mode}
+        anchored={anchored}
       />
 
       {compact ? (

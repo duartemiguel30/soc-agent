@@ -128,6 +128,8 @@ function IncidentsContent() {
   const [levelFilter, setLevelFilter] = useState<LevelFilter>(() => queryLevel(searchParams.get("rule_level")));
   const [mitreFilter, setMitreFilter] = useState(() => searchParams.get("mitre") || "");
   const [agentFilter, setAgentFilter] = useState(() => searchParams.get("agent") || "");
+  const [fromFilter, setFromFilter] = useState(() => searchParams.get("from") || "");
+  const [toFilter, setToFilter] = useState(() => searchParams.get("to") || "");
   const [sortKey, setSortKey] = useState<SortKey>("newest");
   const [compact, setCompact] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(true);
@@ -139,14 +141,14 @@ function IncidentsContent() {
   const refresh = useCallback(async () => {
     setError(null);
     try {
-      setIncidents(await listIncidents(archiveFilter));
+      setIncidents(await listIncidents(archiveFilter, { from: fromFilter, to: toFilter }));
       setLastUpdated(new Date().toLocaleTimeString());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load incidents");
     } finally {
       setLoading(false);
     }
-  }, [archiveFilter]);
+  }, [archiveFilter, fromFilter, toFilter]);
 
   useEffect(() => {
     const applyParams = window.setTimeout(() => {
@@ -159,6 +161,8 @@ function IncidentsContent() {
       setLevelFilter(queryLevel(searchParams.get("rule_level")));
       setMitreFilter(searchParams.get("mitre") || "");
       setAgentFilter(searchParams.get("agent") || "");
+      setFromFilter(searchParams.get("from") || "");
+      setToFilter(searchParams.get("to") || "");
     }, 0);
     return () => window.clearTimeout(applyParams);
   }, [searchParams]);
@@ -273,6 +277,8 @@ function IncidentsContent() {
     setLevelFilter("all");
     setMitreFilter("");
     setAgentFilter("");
+    setFromFilter("");
+    setToFilter("");
     setSortKey("newest");
     setArchiveFilter("false");
     router.replace("/incidents");
@@ -448,6 +454,7 @@ function IncidentsContent() {
                   <div className="result-row">
                     <span>
                       Showing {filteredIncidents.length} of {incidents.length} incidents
+                      {fromFilter || toFilter ? ` from ${fromFilter || "start"} to ${toFilter || "now"}` : ""}
                     </span>
                     <button className="button ghost" onClick={clearFilters} type="button">
                       Clear filters

@@ -20,7 +20,7 @@ from db.models import (
     IncidentPlaybook,
     IncidentPlaybookStep,
 )
-from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -360,9 +360,9 @@ def alert_evolution_window(range_name: str, anchor: str | None, timestamps: list
         if range_name == "7d":
             return now - timedelta(days=7), now
         if range_name == "1m":
-            return add_months_preserve_time(now, -1), now
+            return start_of_month(now), now
         if range_name == "1y":
-            return add_months_preserve_time(now, -12), now
+            return start_of_year(now), now
 
     anchor_date = parse_evolution_anchor(anchor)
     if range_name == "24h":
@@ -418,9 +418,9 @@ def alert_evolution_window_label(range_name: str, start: datetime | None, end: d
         if range_name == "7d":
             return "Last 7 days"
         if range_name == "1m":
-            return "Last month"
+            return start.strftime("%B %Y")
         if range_name == "1y":
-            return "Last year"
+            return start.strftime("%Y")
     if range_name == "24h":
         return start.strftime("%d/%m/%Y")
     if range_name == "7d":
@@ -470,6 +470,38 @@ def alert_evolution_records(db: Session, archived: str) -> list[datetime]:
             timestamps.append(timestamp)
 
     return timestamps
+
+
+def parse_range_datetime(value: str | None, field_name: str) -> datetime | None:
+    if not value:
+        return None
+    parsed = coerce_datetime(value)
+    if not parsed:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid {field_name} datetime")
+    return parsed
+
+
+def timestamp_in_range(timestamp: datetime | None, start: datetime | None, end: datetime | None) -> bool:
+    if not timestamp:
+        return False
+    if start and timestamp < start:
+        return False
+    if end and timestamp >= end:
+        return False
+    return True
+
+
+def incident_matches_time_range(db: Session, incident: Incident, start: datetime | None, end: datetime | None) -> bool:
+    if not start and not end:
+        return True
+    event_times = (
+        db.query(func.coalesce(IncidentAlertEvent.event_timestamp, IncidentAlertEvent.created_at))
+        .filter(IncidentAlertEvent.incident_id == incident.id)
+        .all()
+    )
+    if event_times:
+        return any(timestamp_in_range(coerce_datetime(row[0]), start, end) for row in event_times)
+    return timestamp_in_range(coerce_datetime(incident.created_at), start, end)
 
 
 def serialize_playbook(playbook: IncidentPlaybook, steps: list[IncidentPlaybookStep]) -> dict:
@@ -1100,7 +1132,7 @@ async def receive_alert(alert: dict, db: Session = Depends(get_db)):
 
 @app.get("/analytics/alert-evolution")
 def get_alert_evolution(
-    range: str = "1m",
+    range: str = "24h",
     bucket: str | None = None,
     anchor: str | None = None,
     archived: str = "all",
@@ -1160,14 +1192,95 @@ def get_alert_evolution(
     }
 
 
-@app.get("/incidents")
-def list_incidents(
+@app.get("/analytics/alert-period")
+def get_alert_period(
+    from_: str = Query(..., alias="from"),
+    to: str = Query(...),
     archived: str = "all",
     db: Session = Depends(get_db),
     admin: dict = Depends(get_current_admin),
 ):
+    """Return read-only alert events and fallback incidents for a selected timeline bucket."""
+    start = parse_range_datetime(from_, "from")
+    end = parse_range_datetime(to, "to")
+    if start and end and start >= end:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="from must be before to")
+
+    event_query = (
+        db.query(IncidentAlertEvent, Incident, IncidentArchiveState)
+        .join(Incident, Incident.id == IncidentAlertEvent.incident_id)
+        .outerjoin(IncidentArchiveState, IncidentArchiveState.incident_id == Incident.id)
+    )
+    normalized = (archived or "all").lower()
+    if normalized == "false":
+        event_query = event_query.filter(IncidentArchiveState.id.is_(None))
+    elif normalized == "true":
+        event_query = event_query.filter(IncidentArchiveState.id.isnot(None))
+    elif normalized != "all":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="archived must be one of: true, false, all",
+        )
+
+    rows = []
+    for event, incident, archive_state in event_query.all():
+        event_time = coerce_datetime(event.event_timestamp or event.created_at)
+        if timestamp_in_range(event_time, start, end):
+            rows.append(
+                {
+                    "kind": "alert_event",
+                    "timestamp": event_time,
+                    "incident": serialize_incident(incident, archive_state, db),
+                    "event": serialize_alert_event(event),
+                }
+            )
+
+    event_incident_ids = {incident_id for (incident_id,) in db.query(IncidentAlertEvent.incident_id).distinct().all()}
+    fallback_query = incident_query_with_archive_filter(db, archived)
+    if event_incident_ids:
+        fallback_query = fallback_query.filter(~Incident.id.in_(event_incident_ids))
+
+    archive_states = {state.incident_id: state for state in db.query(IncidentArchiveState).all()}
+    for incident in fallback_query.all():
+        created_at = coerce_datetime(incident.created_at)
+        if timestamp_in_range(created_at, start, end):
+            rows.append(
+                {
+                    "kind": "incident_fallback",
+                    "timestamp": created_at,
+                    "incident": serialize_incident(incident, archive_states.get(incident.id), db),
+                    "event": None,
+                }
+            )
+
+    rows.sort(key=lambda item: item["timestamp"] or datetime.min, reverse=True)
+    return {
+        "from": start,
+        "to": end,
+        "archived": normalized,
+        "total": len(rows),
+        "items": rows,
+    }
+
+
+@app.get("/incidents")
+def list_incidents(
+    archived: str = "all",
+    from_: str | None = Query(None, alias="from"),
+    to: str | None = None,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
     """List all stored incidents."""
+    start = parse_range_datetime(from_, "from")
+    end = parse_range_datetime(to, "to")
+    if start and end and start >= end:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="from must be before to")
+
     incidents = incident_query_with_archive_filter(db, archived).order_by(Incident.created_at.desc()).all()
+    if start or end:
+        incidents = [incident for incident in incidents if incident_matches_time_range(db, incident, start, end)]
+
     if archived.lower() == "all":
         archive_states = {state.incident_id: state for state in db.query(IncidentArchiveState).all()}
         return [serialize_incident(incident, archive_states.get(incident.id), db) for incident in incidents]

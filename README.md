@@ -314,7 +314,7 @@ The evolution explorer supports:
 - `1y` with weekly or monthly buckets.
 - `All` with yearly buckets.
 
-By default, the range buttons use rolling windows relative to the current time: last 24 hours, last 7 days, last month, and last year. Choosing a date, month, or year switches the explorer into an anchored view for that selected period; `Reset to now` returns to the rolling window.
+By default, Alert/Event Evolution opens on `24h`. The `24h` and `7d` ranges are rolling windows relative to the current time. The `1m` and `1y` ranges are calendar windows: current month-to-now and current year-to-now by default, with month/year pickers for anchored historical periods.
 
 Previous/next navigation is disabled when no stored event exists outside the current selected period. No heavy chart dependency is used; charts are plain React, CSS, and SVG. The dashboard uses a compact responsive analytics grid for event evolution, severity, MITRE, decision, and agent distributions. The dashboard timeline uses compact contained scrolling when buckets do not fit, while `/analytics/alerts` uses an expanded wrapped timeline view that avoids internal horizontal scrollbars and spends vertical page space instead.
 
@@ -324,7 +324,7 @@ Dashboard metric semantics are explicit:
 - `Total alert events` counts correlated alert-event volume, falling back to one event for older incidents without alert-event rows.
 - Dashboard charts are event-weighted by default and use `Counted by alert events` labels where the value is not a plain incident count.
 
-Dashboard metric cards and chart rows link to filtered internal views. Severity, decision, MITRE technique, and agent drilldowns open `/incidents` with query-param initialized filters. The incidents page supports `archived`, `status`, `severity`, `classification`, `decision`, `rule_level`, `mitre`, `agent`, and `q` query params.
+Dashboard metric cards and chart rows link to filtered internal views. Severity, decision, MITRE technique, and agent drilldowns open `/incidents` with query-param initialized filters. Timeline bucket clicks on the dashboard open `/incidents?archived=all&from=...&to=...`; bucket clicks on `/analytics/alerts` open a read-only alert-period drilldown. The incidents page supports `archived`, `status`, `severity`, `classification`, `decision`, `rule_level`, `mitre`, `agent`, `from`, `to`, and `q` query params.
 
 The `/incidents` page is the main active/archive workflow. Its Archive scope filter supports Active (`archived=false`), Archived (`archived=true`), and All (`archived=all`), with Active as the default. The legacy `/archive` route remains available as a compatibility shortcut and redirects to `/incidents?archived=true`.
 

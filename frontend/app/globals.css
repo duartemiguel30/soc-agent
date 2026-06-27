@@ -609,8 +609,12 @@ button:disabled {
     "mitre decision"
     "mitre agents";
   grid-template-columns: minmax(0, 1.35fr) minmax(300px, 0.65fr);
-  gap: 14px;
+  gap: 10px 12px;
   margin-bottom: 18px;
+}
+
+.dashboard-chart-grid .panel {
+  margin-bottom: 0;
 }
 
 .chart-panel {
@@ -744,17 +748,6 @@ button:disabled {
   max-width: 100%;
 }
 
-.chart-scroll-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 6px;
-}
-
-.chart-scroll-button {
-  min-height: 30px;
-  padding: 5px 9px;
-}
-
 .chart-scroll-viewport {
   max-width: 100%;
   min-width: 0;
@@ -784,6 +777,7 @@ button:disabled {
 }
 
 .timeline-grid-full {
+  position: relative;
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
   gap: 14px 12px;
@@ -831,6 +825,10 @@ button:disabled {
   gap: 7px;
   min-width: 62px;
   text-align: center;
+  transition:
+    background 160ms ease,
+    opacity 160ms ease,
+    transform 160ms ease;
 }
 
 .bar-track {
@@ -848,6 +846,7 @@ button:disabled {
   width: 100%;
   border-radius: 7px 7px 0 0;
   background: var(--accent);
+  transition: height 220ms ease;
 }
 
 .bar-column strong,
@@ -1005,10 +1004,41 @@ button:disabled {
   border-radius: 8px;
   color: inherit;
   padding: 2px;
+  cursor: pointer;
 }
 
-.bar-column-link:hover {
+.bar-column-link:hover,
+.bar-column-link:focus-visible {
   background: var(--soft-blue);
+  transform: translateY(-1px);
+}
+
+.bar-column-disabled {
+  opacity: 0.72;
+  cursor: default;
+}
+
+.chart-updating {
+  position: relative;
+}
+
+.chart-updating .bar-column {
+  opacity: 0.58;
+}
+
+.timeline-loading {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 800;
+  padding: 5px 9px;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.08);
 }
 
 .analytics-panel {
