@@ -3,6 +3,7 @@ export type AdminUser = {
   role?: string;
   session?: {
     created_at?: string;
+    last_activity_at?: string;
     expires_at?: string;
   };
 };

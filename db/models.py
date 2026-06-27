@@ -70,6 +70,7 @@ class AdminSession(Base):
     admin_user_id = Column(Integer, ForeignKey("admin_users.id"), index=True, nullable=False)
     token_hash = Column(String, unique=True, index=True, nullable=False)
     created_at = Column(DateTime, default=func.now(), nullable=False)
+    last_activity_at = Column(DateTime, nullable=True)
     expires_at = Column(DateTime, nullable=False)
     revoked_at = Column(DateTime, nullable=True)
     user_agent = Column(String, nullable=True)

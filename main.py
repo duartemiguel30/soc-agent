@@ -28,7 +28,7 @@ from pydantic import BaseModel
 from playbooks.service import get_or_create_playbook, load_playbook, log_action_event, template_suggestion
 from response_actions.service import describe_actions, dry_run_action, execute_action, list_observables
 from security import hash_session_token, verify_password
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -43,8 +43,51 @@ graph = build_graph()
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "http://192.168.56.105:3000")
 AUTH_COOKIE_NAME = os.getenv("AUTH_COOKIE_NAME", "soc_admin_session")
 AUTH_COOKIE_SECURE = os.getenv("AUTH_COOKIE_SECURE", "false").lower() in {"1", "true", "yes", "on"}
-SESSION_TTL_HOURS = int(os.getenv("SESSION_TTL_HOURS", "8"))
 INCIDENT_CORRELATION_WINDOW_MINUTES = int(os.getenv("INCIDENT_CORRELATION_WINDOW_MINUTES", "15"))
+
+
+def configured_session_idle_timeout_minutes() -> int:
+    value = os.getenv("SESSION_IDLE_TIMEOUT_MINUTES")
+    if value:
+        try:
+            return max(1, int(value))
+        except ValueError:
+            logger.warning("Invalid SESSION_IDLE_TIMEOUT_MINUTES=%r; using default 30 minutes", value)
+            return 30
+
+    legacy_hours = os.getenv("SESSION_TTL_HOURS")
+    if legacy_hours:
+        try:
+            return max(1, int(float(legacy_hours) * 60))
+        except ValueError:
+            logger.warning("Invalid SESSION_TTL_HOURS=%r; using default 30 minutes", legacy_hours)
+            return 30
+
+    return 30
+
+
+SESSION_IDLE_TIMEOUT_MINUTES = configured_session_idle_timeout_minutes()
+
+
+def ensure_admin_session_activity_column() -> None:
+    """Add the sliding-session activity column for existing SQLite databases."""
+    with engine.begin() as connection:
+        rows = connection.execute(text("PRAGMA table_info(admin_sessions)")).fetchall()
+        columns = {row[1] for row in rows}
+        if rows and "last_activity_at" not in columns:
+            connection.execute(text("ALTER TABLE admin_sessions ADD COLUMN last_activity_at DATETIME"))
+            connection.execute(
+                text(
+                    """
+                    UPDATE admin_sessions
+                    SET last_activity_at = COALESCE(created_at, expires_at, CURRENT_TIMESTAMP)
+                    WHERE last_activity_at IS NULL
+                    """
+                )
+            )
+
+
+ensure_admin_session_activity_column()
 
 app.add_middleware(
     CORSMiddleware,
@@ -99,6 +142,10 @@ def set_session_cookie(response: Response, token: str, expires_at: datetime) -> 
         max_age=max_age,
         path="/",
     )
+
+
+def next_session_expiry(now: datetime | None = None) -> datetime:
+    return (now or utc_now()) + timedelta(minutes=SESSION_IDLE_TIMEOUT_MINUTES)
 
 
 def clear_session_cookie(response: Response) -> None:
@@ -1065,7 +1112,7 @@ def action_event_source(event: IncidentActionEvent) -> str:
     return "system"
 
 
-def get_current_admin(request: Request, db: Session = Depends(get_db)) -> dict:
+def get_current_admin(request: Request, response: Response, db: Session = Depends(get_db)) -> dict:
     token = request.cookies.get(AUTH_COOKIE_NAME)
     if not token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Admin authentication required")
@@ -1074,12 +1121,24 @@ def get_current_admin(request: Request, db: Session = Depends(get_db)) -> dict:
     admin_session = db.query(AdminSession).filter(AdminSession.token_hash == token_hash).first()
     if not admin_session:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Admin authentication required")
-    if admin_session.revoked_at is not None or admin_session.expires_at <= utc_now():
+
+    now = utc_now()
+    if admin_session.revoked_at is not None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Admin authentication required")
+    if admin_session.expires_at <= now:
+        admin_session.revoked_at = now
+        db.commit()
+        clear_session_cookie(response)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Admin authentication required")
 
     admin_user = db.query(AdminUser).filter(AdminUser.id == admin_session.admin_user_id).first()
     if not admin_user or not admin_user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Admin authentication required")
+
+    admin_session.last_activity_at = now
+    admin_session.expires_at = next_session_expiry(now)
+    db.commit()
+    set_session_cookie(response, token, admin_session.expires_at)
     return {"user": admin_user, "session": admin_session}
 
 
@@ -1092,11 +1151,14 @@ def login(credentials: LoginRequest, request: Request, response: Response, db: S
     if not verify_password(credentials.password, admin_user.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid admin credentials")
 
+    now = utc_now()
     raw_token = secrets.token_urlsafe(32)
-    expires_at = utc_now() + timedelta(hours=SESSION_TTL_HOURS)
+    expires_at = next_session_expiry(now)
     admin_session = AdminSession(
         admin_user_id=admin_user.id,
         token_hash=hash_session_token(raw_token),
+        created_at=now,
+        last_activity_at=now,
         expires_at=expires_at,
         user_agent=request.headers.get("user-agent"),
         client_ip=get_client_ip(request),
@@ -1129,6 +1191,7 @@ def me(admin: dict = Depends(get_current_admin)):
         "role": admin_user.role,
         "session": {
             "created_at": admin_session.created_at,
+            "last_activity_at": admin_session.last_activity_at,
             "expires_at": admin_session.expires_at,
         },
     }

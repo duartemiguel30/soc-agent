@@ -46,7 +46,7 @@ Create a local `.env` from `.env.example`. The safe current response-action conf
 AUTH_COOKIE_NAME=soc_admin_session
 AUTH_COOKIE_SECURE=false
 FRONTEND_ORIGIN=http://192.168.56.105:3000
-SESSION_TTL_HOURS=8
+SESSION_IDLE_TIMEOUT_MINUTES=30
 INCIDENT_CORRELATION_WINDOW_MINUTES=15
 
 RESPONSE_ACTIONS_ENABLED=true
@@ -58,6 +58,8 @@ AD_PROTECTED_USERS=Administrator,admin,krbtgt,vagrant,Domain Admins,Enterprise A
 ```
 
 `AUTH_COOKIE_SECURE=false` is for local HTTP lab use. Set it to `true` behind HTTPS.
+
+`SESSION_IDLE_TIMEOUT_MINUTES` controls admin inactivity timeout. The default is 30 minutes. Each authenticated request refreshes `last_activity_at` and extends `expires_at`; inactivity beyond the configured minutes requires logging in again. `SESSION_TTL_HOURS` is still accepted as a legacy fallback when `SESSION_IDLE_TIMEOUT_MINUTES` is missing, but new environments should use `SESSION_IDLE_TIMEOUT_MINUTES`.
 
 `INCIDENT_CORRELATION_WINDOW_MINUTES` controls how long repeated related Wazuh alerts are grouped into an existing active incident. The default is 15 minutes.
 
@@ -104,14 +106,14 @@ Verify users and sessions:
 
 ```sql
 SELECT id, username, role, is_active, created_at FROM admin_users;
-SELECT id, admin_user_id, created_at, expires_at, revoked_at FROM admin_sessions;
+SELECT id, admin_user_id, created_at, last_activity_at, expires_at, revoked_at FROM admin_sessions;
 ```
 
-The browser receives only an opaque HttpOnly session cookie. SQLite stores only `token_hash`, never the raw session token.
+The browser receives only an opaque HttpOnly session cookie. SQLite stores only `token_hash`, never the raw session token. Admin sessions use sliding idle expiration: active use refreshes `last_activity_at`, `expires_at`, and the cookie max age; logout sets `revoked_at` immediately.
 
 ## Database Tables
 
-FastAPI calls `Base.metadata.create_all(bind=engine)` on startup. After pulling schema changes onto the logger VM, you can manually verify/create runtime tables:
+FastAPI calls `Base.metadata.create_all(bind=engine)` on startup and safely adds the auth-only `admin_sessions.last_activity_at` column when needed for existing SQLite databases. After pulling schema changes onto the logger VM, you can manually verify/create runtime tables:
 
 ```bash
 cd ~/soc-agent
