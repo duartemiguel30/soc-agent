@@ -59,6 +59,14 @@ function envNumber(name, fallback) {
   return Number.isFinite(value) && value > 0 ? value : Number(fallback);
 }
 
+function envBoolean(name, fallback) {
+  const value = process.env[name];
+  if (value === undefined || value === "") {
+    return fallback;
+  }
+  return value.trim().toLowerCase() === "true";
+}
+
 loadDemoEnvFile();
 
 function clamp(value, min, max) {
@@ -94,6 +102,8 @@ const videoWidth = envNumber("DEMO_VIDEO_WIDTH", "1920");
 const videoHeight = envNumber("DEMO_VIDEO_HEIGHT", "1080");
 const generateReportInDemo = process.env.DEMO_GENERATE_REPORT !== "false";
 const reportTimeoutMs = envNumber("DEMO_REPORT_TIMEOUT_MS", "90000");
+const demoStartTheme = process.env.DEMO_START_THEME || "light";
+const switchToDarkAfterLogin = envBoolean("DEMO_SWITCH_TO_DARK_AFTER_LOGIN", true);
 const timing = {
   captionMin: envNumber("DEMO_CAPTION_MIN_MS", "1400"),
   captionMax: envNumber("DEMO_CAPTION_MAX_MS", "3200"),
@@ -126,6 +136,13 @@ async function loadPlaywright() {
 
 function urlFor(pathname) {
   return new URL(pathname, baseUrl).toString();
+}
+
+async function setInitialTheme(context, theme) {
+  const normalizedTheme = theme === "dark" ? "dark" : "light";
+  await context.addInitScript((nextTheme) => {
+    localStorage.setItem("soc_theme", nextTheme);
+  }, normalizedTheme);
 }
 
 async function pause(page, ms = actionPause("normal")) {
@@ -645,6 +662,25 @@ async function login(page) {
   await ensureDemoCursor(page);
 }
 
+async function switchDemoToDarkMode(page) {
+  if (!switchToDarkAfterLogin) {
+    return;
+  }
+
+  const currentTheme = await page.evaluate(() => document.documentElement.dataset.theme || "light").catch(() => "light");
+  if (currentTheme === "dark") {
+    return;
+  }
+
+  await showCaption(page, "Switching to dark mode for the SOC analyst workflow");
+  const toggled = await clickWithDemoCursor(page, page.getByRole("button", { name: /switch to dark mode/i }).first(), undefined, {
+    actionKind: "click",
+  });
+  if (toggled) {
+    await page.waitForFunction(() => document.documentElement.dataset.theme === "dark", null, { timeout: 4000 });
+  }
+}
+
 async function demonstrateDashboard(page) {
   await showCaption(page, "Dashboard metrics: incidents vs alert events");
   await smoothScrollBy(page, 320);
@@ -746,6 +782,27 @@ async function demonstrateIncidentDetail(page) {
   await safeScrollToText(page, "Action History", "Notes, Timeline, and Action History");
 }
 
+async function demonstrateAdminAndAudit(page) {
+  if (await safeGotoOrContinue(page, "/admin/users", "Admin Users: multi-user RBAC management")) {
+    await safeScrollToText(page, "Create User", "Super admins can create analyst and viewer accounts.");
+    await safeScrollToText(page, "Admin Users", "Existing users are edited through explicit row actions.");
+    const firstRow = page.locator("article.admin-row").first();
+    if (await firstRow.count()) {
+      await smoothScrollToLocator(page, firstRow);
+      await moveCursorToLocator(page, firstRow.getByRole("button", { name: /save changes/i }).first());
+      await showCaption(page, "Display name and role edits stay local until Save changes is clicked.");
+      await pauseForAction(page, "section");
+    }
+  }
+
+  if (await safeGotoOrContinue(page, "/admin/audit", "Admin Audit: login, user, permission, and action events")) {
+    await safeScrollToText(page, "Audit Metrics", "Audit metrics summarize recent security activity.");
+    await safeScrollToText(page, "Audit Events", "Audit events preserve the operational trail without exposing secrets.");
+    await smoothScrollBy(page, 760);
+    await pauseForAction(page, "section");
+  }
+}
+
 async function demonstrateReport(page) {
   if (!(await safeGotoOrContinue(page, "/report", "Executive report: read-only SOC summary"))) {
     return;
@@ -830,12 +887,15 @@ async function main() {
         size: { width: videoWidth, height: videoHeight },
       },
     });
+    await setInitialTheme(context, demoStartTheme);
     page = await context.newPage();
     await login(page);
+    await switchDemoToDarkMode(page);
     await demonstrateDashboard(page);
     await demonstrateAlertTimeline(page);
     await demonstrateMitre(page);
     await demonstrateIncidents(page);
+    await demonstrateAdminAndAudit(page);
     await demonstrateReport(page);
     await goto(page, "/dashboard", "Back to dashboard metrics");
     await maybeToggleTheme(page);

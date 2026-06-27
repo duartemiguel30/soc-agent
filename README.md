@@ -4,6 +4,8 @@ SOC AI Agent is a lab SOC workflow application for Wazuh alert ingestion, Gemini
 
 The backend is FastAPI with SQLite persistence. The primary admin UI is the Next.js app in `frontend/`. The legacy FastAPI-served `static/index.html` remains available at `/` as a fallback.
 
+For a fuller architecture, operations, RBAC, data-flow, and safety guide, see [`DOCS.md`](DOCS.md).
+
 ## Current Capabilities
 
 - Public Wazuh webhook ingestion at `POST /webhook/wazuh`.
@@ -579,6 +581,30 @@ The demo covers dashboard metrics, Alert/Event Evolution, alert timeline drilldo
 
 The demo flow opens pages, changes read-only filters, scrolls, opens drilldowns, opens an incident detail, and generates the read-only report; it does not approve, reject, archive, unarchive, execute response actions, create notes, update playbook steps, or create playbooks.
 
+## Role-Based Demo Videos
+
+For polished role-specific walkthroughs, run the separate role demo recorder:
+
+```bash
+cd frontend
+npm run demo:roles:video
+```
+
+This uses `.env.demo`, generates one video each for super-admin/admin, analyst, and viewer under `demo-output/roles/`, and stays separate from `npm run demo:record`. It is safe by default: it does not execute destructive response actions, does not approve/reject/archive incidents, and creates disposable analyst/viewer demo users only when configured, disabling them during cleanup.
+
+## Visual Role Test Recordings
+
+The frontend also includes a separate Playwright role-test recorder. It is independent from the polished demo recorder and writes one video per role:
+
+```bash
+cd frontend
+npm run test:roles:video
+```
+
+The recorder loads configuration from `frontend/.env.tests`, then `.env.tests` in the repository root, or an explicit `TEST_ENV_FILE`. Shell environment variables take precedence. It creates disposable analyst/viewer users by default, records admin/super_admin, analyst, and viewer flows, writes output under `tests-output/`, and disables generated test users during cleanup.
+
+The role recorder is safe by default: it does not execute destructive response actions, does not enable AD or endpoint isolation execution, does not approve/reject/archive incidents, and does not store auth tokens in `localStorage` or `sessionStorage`.
+
 ## Validation
 
 Common validation commands:
@@ -588,6 +614,25 @@ python -m compileall main.py agent db scripts security.py playbooks response_act
 cd frontend
 npm run build
 npm run lint
+```
+
+Admin/RBAC smoke validation:
+
+```bash
+cd frontend
+npm run smoke:admin
+```
+
+The smoke script creates unique disposable `smoke_*` analyst/viewer users, validates admin users UX, RBAC denial paths, audit visibility, response-action UI safety, and disables the disposable users during cleanup. It writes results and failure screenshots under `smoke-output/`, which is ignored by git. It does not execute response actions and does not store auth tokens in `localStorage` or `sessionStorage`.
+
+Useful smoke overrides:
+
+```bash
+SMOKE_FRONTEND_URL=http://192.168.56.105:3000 \
+SMOKE_BACKEND_URL=http://192.168.56.105:8000 \
+SMOKE_ADMIN_USERNAME=admin \
+SMOKE_ADMIN_PASSWORD=admin \
+npm run smoke:admin
 ```
 
 For demos, run the full product manually because behavior depends on the live VM, Wazuh, FastAPI, Gemini configuration, auth state, and SQLite data.

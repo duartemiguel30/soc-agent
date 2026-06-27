@@ -5,6 +5,7 @@ __pycache__/
 .env
 .env.*
 .env.demo
+.env.tests
 !.env.example
 frontend/node_modules/
 frontend/.next/
@@ -12,8 +13,11 @@ frontend/out/
 frontend/.env
 frontend/.env.*
 frontend/.env.demo
+frontend/.env.tests
 !frontend/.env.example
 demo-output/
 smoke-output/
 frontend/smoke-output/
+tests-output/
+frontend/tests-output/
 .python-version

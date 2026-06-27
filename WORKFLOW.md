@@ -51,7 +51,18 @@ npm run start -- -H 0.0.0.0
 Playwright video
 
 on frontend/
+
+# RECORD DEMO
 npm run demo:record 
+
+# RECORD ROLES DEMO
+npm run test:roles:video
 
 on the repo page
 ffmpeg -y -i demo-output/soc-ai-agent-demo.webm demo-output/soc-ai-agent-demo.mp4
+
+
+For role Videos
+ffmpeg -y -i tests-output\role-viewer.webm tests-output\role-viewer.mp4
+ffmpeg -y -i tests-output\role-analyst.webm tests-output\role-analyst.mp4
+ffmpeg -y -i tests-output\role-admin.webm tests-output\role-admin.mp4

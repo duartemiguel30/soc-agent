@@ -1,0 +1,838 @@
+import fs from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const frontendRoot = path.resolve(__dirname, "..");
+const repoRoot = path.resolve(frontendRoot, "..");
+
+function loadDemoEnvFile() {
+  const candidates = process.env.DEMO_ENV_FILE
+    ? [path.resolve(process.env.DEMO_ENV_FILE)]
+    : [path.join(frontendRoot, ".env.demo"), path.join(repoRoot, ".env.demo")];
+
+  for (const candidate of candidates) {
+    if (!existsSync(candidate)) continue;
+    const content = readFileSync(candidate, "utf8");
+    for (const rawLine of content.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith("#")) continue;
+      const equalsIndex = line.indexOf("=");
+      if (equalsIndex <= 0) continue;
+      const key = line.slice(0, equalsIndex).trim();
+      let value = line.slice(equalsIndex + 1).trim();
+      if (
+        (value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'"))
+      ) {
+        value = value.slice(1, -1);
+      } else {
+        value = value.replace(/\s+#.*$/, "").trim();
+      }
+      if (key && process.env[key] === undefined) {
+        process.env[key] = value;
+      }
+    }
+    console.log(`[INFO] Loaded demo environment from ${candidate}`);
+    return;
+  }
+}
+
+loadDemoEnvFile();
+
+function envBoolean(name, fallback) {
+  const value = process.env[name];
+  if (value === undefined || value === "") return fallback;
+  return value.trim().toLowerCase() === "true";
+}
+
+function envNumber(name, fallback) {
+  const value = Number(process.env[name] || fallback);
+  return Number.isFinite(value) && value > 0 ? value : Number(fallback);
+}
+
+function speedMultiplier() {
+  const numeric = Number(process.env.DEMO_SPEED_MULTIPLIER);
+  if (Number.isFinite(numeric) && numeric > 0) return numeric;
+  const speed = (process.env.DEMO_SPEED || "fast").toLowerCase();
+  if (speed === "slow") return 1.2;
+  if (speed === "fast") return 0.8;
+  return 1;
+}
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function sanitizeLabel(label) {
+  return label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 90) || "capture";
+}
+
+const frontendUrl =
+  process.env.DEMO_FRONTEND_URL ||
+  process.env.DEMO_BASE_URL ||
+  "http://192.168.56.105:3000";
+const adminUsername = process.env.DEMO_ADMIN_USERNAME || "admin";
+const adminPassword = process.env.DEMO_ADMIN_PASSWORD || "admin";
+const headless = envBoolean("DEMO_HEADLESS", false);
+const videoWidth = envNumber("DEMO_VIDEO_WIDTH", 1920);
+const videoHeight = envNumber("DEMO_VIDEO_HEIGHT", 1080);
+const slowMo = envNumber("DEMO_SLOW_MO_MS", 80);
+const outputDir = path.resolve(repoRoot, process.env.DEMO_ROLES_OUTPUT_DIR || "demo-output/roles");
+const resultsPath = path.join(outputDir, "role-demo-results.json");
+const screenshotsDir = path.join(outputDir, "screenshots");
+const rolesTheme = process.env.DEMO_ROLES_THEME || "dark";
+const createUsers = envBoolean("DEMO_ROLES_CREATE_USERS", true);
+const disableCreatedUsers = envBoolean("DEMO_ROLES_DISABLE_CREATED_USERS", true);
+const generateReport = envBoolean("DEMO_ROLES_GENERATE_REPORT", false);
+const includeAdminUserCreation = envBoolean("DEMO_ROLES_INCLUDE_ADMIN_USER_CREATION", true);
+const includeForbiddenChecks = envBoolean("DEMO_ROLES_INCLUDE_FORBIDDEN_CHECKS", true);
+const runId = Date.now();
+const analystUsername = `demo_analyst_${runId}`;
+const viewerUsername = `demo_viewer_${runId}`;
+const analystPassword = `DemoRole!${runId}A`;
+const viewerPassword = `DemoRole!${runId}V`;
+const viewerResetPassword = `DemoRole!${runId}R`;
+let viewerLoginPassword = viewerPassword;
+const multiplier = speedMultiplier();
+const timing = {
+  captionMin: envNumber("DEMO_CAPTION_MIN_MS", 1000),
+  captionMax: envNumber("DEMO_CAPTION_MAX_MS", 2400),
+  captionPerChar: envNumber("DEMO_CAPTION_PER_CHAR_MS", 24),
+  pageMin: envNumber("DEMO_PAGE_MIN_MS", 900),
+  pageMax: envNumber("DEMO_PAGE_MAX_MS", 1900),
+  click: envNumber("DEMO_CLICK_PAUSE_MS", 500),
+  hover: envNumber("DEMO_HOVER_PAUSE_MS", 300),
+  section: envNumber("DEMO_SECTION_PAUSE_MS", 850),
+  scrollMin: envNumber("DEMO_SCROLL_MIN_MS", 450),
+  scrollMax: envNumber("DEMO_SCROLL_MAX_MS", 1200),
+};
+
+const results = [];
+const createdUsers = [];
+const videos = {};
+let failureCount = 0;
+let activePage = null;
+
+async function loadPlaywright() {
+  try {
+    return await import("playwright");
+  } catch (error) {
+    if (error?.code !== "ERR_MODULE_NOT_FOUND") throw error;
+    throw new Error("Playwright is required. Run: npm install && npx playwright install chromium");
+  }
+}
+
+function urlFor(pathname) {
+  return new URL(pathname, frontendUrl).toString();
+}
+
+async function record(role, status, message, extra = {}) {
+  results.push({ role, status, message, ...extra });
+  console.log(`[${status.toUpperCase()}] ${role}: ${message}`);
+}
+
+async function pass(role, message) {
+  await record(role, "pass", message);
+}
+
+async function info(role, message) {
+  await record(role, "info", message);
+}
+
+async function skip(role, message, reason) {
+  await record(role, "skip", message, { reason });
+}
+
+async function fail(role, message, error) {
+  failureCount += 1;
+  const detail = error instanceof Error ? error.message : String(error || "");
+  const screenshot = activePage ? await saveScreenshot(activePage, `${role}-${message}`).catch(() => null) : null;
+  await record(role, "fail", message, { detail, screenshot });
+}
+
+async function assert(condition, message) {
+  if (!condition) throw new Error(message);
+}
+
+async function runRole(role, message, callback) {
+  try {
+    await callback();
+    await pass(role, message);
+  } catch (error) {
+    await fail(role, message, error);
+  }
+}
+
+function scaled(value) {
+  return Math.round(value * multiplier);
+}
+
+function captionDuration(text) {
+  return scaled(clamp(timing.captionMin + text.length * timing.captionPerChar, timing.captionMin, timing.captionMax));
+}
+
+async function pause(page, value = timing.section) {
+  await page.waitForTimeout(scaled(value));
+}
+
+async function waitForPage(page) {
+  await page.waitForLoadState("domcontentloaded");
+  await page.waitForTimeout(300);
+}
+
+async function saveScreenshot(page, label) {
+  await fs.mkdir(screenshotsDir, { recursive: true });
+  const filePath = path.join(screenshotsDir, `${sanitizeLabel(label)}-${Date.now()}.png`);
+  await page.screenshot({ path: filePath, fullPage: true });
+  return filePath;
+}
+
+async function writeResults() {
+  await fs.mkdir(outputDir, { recursive: true });
+  await fs.writeFile(
+    resultsPath,
+    JSON.stringify(
+      {
+        ok: failureCount === 0,
+        frontendUrl,
+        runId,
+        videos,
+        createdUsers: Object.fromEntries(
+          createdUsers.map((user) => [user.role || user.username, {
+            id: user.id,
+            username: user.username,
+            role: user.role,
+            disabledAtCleanup: Boolean(user.disabledAtCleanup),
+          }]),
+        ),
+        results,
+      },
+      null,
+      2,
+    ),
+  );
+  console.log(`[INFO] Role demo results written to ${resultsPath}`);
+}
+
+async function installVisualHelpers(page) {
+  await page.evaluate(() => {
+    if (!document.getElementById("soc-role-demo-style")) {
+      const style = document.createElement("style");
+      style.id = "soc-role-demo-style";
+      style.textContent = `
+        #soc-role-demo-cursor {
+          position: fixed;
+          left: 48px;
+          top: 48px;
+          width: 32px;
+          height: 32px;
+          z-index: 2147483647;
+          pointer-events: none;
+          opacity: 0.96;
+          filter: drop-shadow(0 3px 5px rgba(15, 23, 42, 0.28));
+          transform-origin: 3px 3px;
+          transition: transform 140ms ease, opacity 180ms ease;
+        }
+        #soc-role-demo-cursor svg { display: block; width: 32px; height: 32px; }
+        #soc-role-demo-cursor.clicking { transform: scale(0.92); }
+        #soc-role-demo-cursor.clicking::after {
+          content: "";
+          position: absolute;
+          left: -5px;
+          top: -5px;
+          width: 18px;
+          height: 18px;
+          border: 2px solid rgba(59, 130, 246, 0.5);
+          border-radius: 999px;
+          animation: soc-role-demo-click 260ms ease-out forwards;
+        }
+        @keyframes soc-role-demo-click {
+          from { opacity: 0.85; transform: scale(0.5); }
+          to { opacity: 0; transform: scale(1.8); }
+        }
+        #soc-role-demo-caption {
+          position: fixed;
+          left: 28px;
+          bottom: 28px;
+          z-index: 2147483646;
+          max-width: min(560px, calc(100vw - 56px));
+          border: 1px solid rgba(148, 163, 184, 0.45);
+          border-radius: 8px;
+          background: rgba(15, 23, 42, 0.9);
+          color: #f8fafc;
+          box-shadow: 0 18px 42px rgba(15, 23, 42, 0.28);
+          font: 700 15px/1.35 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          letter-spacing: 0;
+          padding: 11px 13px;
+          pointer-events: none;
+          opacity: 0;
+          transform: translateY(8px);
+          transition: opacity 180ms ease, transform 180ms ease;
+        }
+        #soc-role-demo-caption.visible { opacity: 1; transform: translateY(0); }
+      `;
+      document.head.appendChild(style);
+    }
+
+    if (!document.getElementById("soc-role-demo-cursor")) {
+      const cursor = document.createElement("div");
+      cursor.id = "soc-role-demo-cursor";
+      cursor.dataset.x = "48";
+      cursor.dataset.y = "48";
+      cursor.innerHTML = `
+        <svg viewBox="0 0 32 32" aria-hidden="true">
+          <path d="M4 3.5 25.2 17.2 15.2 19.1 10.2 28.5 4 3.5Z" fill="#ffffff" stroke="#111827" stroke-width="2" stroke-linejoin="round" />
+          <path d="M13.9 18.4 18.6 27" fill="none" stroke="#111827" stroke-width="2.3" stroke-linecap="round" />
+        </svg>
+      `;
+      document.body.appendChild(cursor);
+    }
+  });
+}
+
+async function showCaption(page, text) {
+  await installVisualHelpers(page);
+  await page.evaluate((captionText) => {
+    let caption = document.getElementById("soc-role-demo-caption");
+    if (!caption) {
+      caption = document.createElement("div");
+      caption.id = "soc-role-demo-caption";
+      document.body.appendChild(caption);
+    }
+    caption.textContent = captionText;
+    requestAnimationFrame(() => caption.classList.add("visible"));
+  }, text);
+  await page.waitForTimeout(captionDuration(text));
+}
+
+async function hideCaption(page) {
+  await page.evaluate(() => document.getElementById("soc-role-demo-caption")?.classList.remove("visible")).catch(() => undefined);
+}
+
+async function glideCursorTo(page, x, y, options = {}) {
+  await installVisualHelpers(page);
+  await page.evaluate(
+    ({ nextX, nextY, minDuration, maxDuration }) =>
+      new Promise((resolve) => {
+        const cursor = document.getElementById("soc-role-demo-cursor");
+        if (!cursor) {
+          resolve();
+          return;
+        }
+        const currentX = Number(cursor.dataset.x || 48);
+        const currentY = Number(cursor.dataset.y || 48);
+        const distance = Math.hypot(nextX - currentX, nextY - currentY);
+        const duration = Math.min(maxDuration, Math.max(minDuration, distance * 1.15));
+        const start = performance.now();
+        const ease = (value) => 1 - Math.pow(1 - value, 3);
+        function frame(now) {
+          const progress = Math.min(1, (now - start) / Math.max(1, duration));
+          const x = currentX + (nextX - currentX) * ease(progress);
+          const y = currentY + (nextY - currentY) * ease(progress);
+          cursor.style.left = `${x}px`;
+          cursor.style.top = `${y}px`;
+          cursor.dataset.x = String(x);
+          cursor.dataset.y = String(y);
+          if (progress < 1) requestAnimationFrame(frame);
+          else resolve();
+        }
+        requestAnimationFrame(frame);
+      }),
+    { nextX: x, nextY: y, minDuration: scaled(320), maxDuration: scaled(900), ...options },
+  );
+  await page.mouse.move(x, y).catch(() => undefined);
+}
+
+async function locatorCenter(locator) {
+  const box = await locator.first().boundingBox().catch(() => null);
+  if (!box) return null;
+  return { x: box.x + box.width / 2, y: box.y + Math.min(box.height / 2, 42) };
+}
+
+async function smoothScrollToY(page, targetY) {
+  await page.evaluate(
+    ({ nextY, minDuration, maxDuration }) =>
+      new Promise((resolve) => {
+        const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+        const startY = window.scrollY || document.documentElement.scrollTop || 0;
+        const endY = Math.min(maxScroll, Math.max(0, nextY));
+        const distance = endY - startY;
+        if (Math.abs(distance) < 2) {
+          resolve();
+          return;
+        }
+        const duration = Math.min(maxDuration, Math.max(minDuration, Math.abs(distance) * 0.48));
+        const start = performance.now();
+        const ease = (value) => 1 - Math.pow(1 - value, 3);
+        function frame(now) {
+          const progress = Math.min(1, (now - start) / Math.max(1, duration));
+          window.scrollTo(0, startY + distance * ease(progress));
+          if (progress < 1) requestAnimationFrame(frame);
+          else resolve();
+        }
+        requestAnimationFrame(frame);
+      }),
+    { nextY: targetY, minDuration: scaled(timing.scrollMin), maxDuration: scaled(timing.scrollMax) },
+  );
+}
+
+async function smoothScrollBy(page, distance) {
+  const current = await page.evaluate(() => window.scrollY || document.documentElement.scrollTop || 0);
+  await smoothScrollToY(page, current + distance);
+}
+
+async function smoothScrollToLocator(page, locator) {
+  const target = locator.first();
+  if (!(await target.count().catch(() => 0))) return false;
+  const viewport = page.viewportSize() || { width: videoWidth, height: videoHeight };
+  const center = await locatorCenter(target);
+  if (!center) {
+    await target.scrollIntoViewIfNeeded({ timeout: 2200 }).catch(() => undefined);
+    return true;
+  }
+  const desiredY = Math.round(viewport.height * 0.4);
+  await smoothScrollToY(page, (await page.evaluate(() => window.scrollY || 0)) + center.y - desiredY);
+  const updatedCenter = (await locatorCenter(target)) || center;
+  await glideCursorTo(page, Math.min(viewport.width - 80, Math.max(24, updatedCenter.x)), Math.min(viewport.height - 80, Math.max(24, updatedCenter.y)));
+  return true;
+}
+
+async function clickWithCursor(page, locator, caption, options = {}) {
+  const target = locator.first();
+  try {
+    if (!(await target.count())) return false;
+    if (caption) await showCaption(page, caption);
+    await smoothScrollToLocator(page, target);
+    const center = await locatorCenter(target);
+    if (center) await glideCursorTo(page, center.x, center.y);
+    await pause(page, timing.hover);
+    await page.evaluate(() => document.getElementById("soc-role-demo-cursor")?.classList.add("clicking"));
+    await target.click({ timeout: options.timeout || 2500 });
+    await pause(page, 150);
+    await page.evaluate(() => document.getElementById("soc-role-demo-cursor")?.classList.remove("clicking"));
+    await pause(page, timing.click);
+    return true;
+  } catch {
+    await page.evaluate(() => document.getElementById("soc-role-demo-cursor")?.classList.remove("clicking")).catch(() => undefined);
+    return false;
+  }
+}
+
+async function fillWithCursor(page, locator, value) {
+  await smoothScrollToLocator(page, locator);
+  await locator.first().fill(value);
+  await pause(page, timing.click);
+}
+
+async function scrollToText(page, text, caption) {
+  const locator = page.getByText(text, { exact: true }).first();
+  if (!(await locator.count().catch(() => 0))) return false;
+  if (caption) await showCaption(page, caption);
+  await smoothScrollToLocator(page, locator);
+  await pause(page, timing.section);
+  return true;
+}
+
+async function goto(page, pathname, caption) {
+  await page.goto(urlFor(pathname), { waitUntil: "domcontentloaded" });
+  await waitForPage(page);
+  await installVisualHelpers(page);
+  if (caption) await showCaption(page, caption);
+  await pause(page, (timing.pageMin + timing.pageMax) / 2);
+}
+
+async function ensureTheme(page, theme) {
+  const normalizedTheme = theme === "dark" ? "dark" : "light";
+  const currentTheme = await page.evaluate(() => document.documentElement.dataset.theme || "light").catch(() => "light");
+  if (currentTheme === normalizedTheme) return;
+  await clickWithCursor(page, page.getByRole("button", { name: normalizedTheme === "dark" ? /switch to dark mode/i : /switch to light mode/i }));
+  await page.waitForFunction((nextTheme) => document.documentElement.dataset.theme === nextTheme, normalizedTheme, { timeout: 4000 });
+}
+
+async function createRecordedContext(browser, videoFile) {
+  await fs.mkdir(outputDir, { recursive: true });
+  const context = await browser.newContext({
+    viewport: { width: videoWidth, height: videoHeight },
+    recordVideo: { dir: outputDir, size: { width: videoWidth, height: videoHeight } },
+  });
+  await context.addInitScript((theme) => {
+    localStorage.setItem("soc_theme", theme === "light" ? "light" : "dark");
+  }, rolesTheme);
+  const page = await context.newPage();
+  activePage = page;
+  return { context, page, videoFile };
+}
+
+async function closeRecordedContext(recording, key) {
+  const video = recording.page.video();
+  await recording.context.close();
+  if (!video) return null;
+  const source = await video.path();
+  const target = path.join(outputDir, recording.videoFile);
+  await fs.copyFile(source, target);
+  await fs.rm(source, { force: true });
+  videos[key] = target;
+  return target;
+}
+
+function requestContext(contextOrPage) {
+  if (contextOrPage?.request) return contextOrPage.request;
+  if (contextOrPage?.context) return contextOrPage.context().request;
+  throw new Error("Expected BrowserContext or Page.");
+}
+
+async function apiFetch(contextOrPage, requestPath, options = {}) {
+  const targetPath = requestPath.startsWith("/backend") ? requestPath : `/backend${requestPath}`;
+  const targetUrl = requestPath.startsWith("http") ? requestPath : new URL(targetPath, frontendUrl).toString();
+  const headers = { ...(options.headers || {}) };
+  const requestOptions = { method: options.method || "GET", headers };
+  if (options.body !== undefined) {
+    requestOptions.data = typeof options.body === "string" ? options.body : JSON.stringify(options.body);
+    requestOptions.headers = { "content-type": "application/json", ...headers };
+  }
+  const response = await requestContext(contextOrPage).fetch(targetUrl, requestOptions);
+  const text = await response.text();
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = text;
+  }
+  return { status: response.status(), ok: response.ok(), text, data };
+}
+
+async function loginAs(page, username, password, roleLabel) {
+  await goto(page, "/login");
+  await fillWithCursor(page, page.getByLabel("Username"), username);
+  await fillWithCursor(page, page.getByLabel("Password"), password);
+  await clickWithCursor(page, page.getByRole("button", { name: /sign in/i }), `${roleLabel} signs in with an HttpOnly session cookie.`);
+  await page.waitForURL(/\/dashboard/, { timeout: 15000 });
+  await waitForPage(page);
+  await installVisualHelpers(page);
+  await ensureTheme(page, rolesTheme);
+  await showCaption(page, "Role walkthrough in dark mode");
+}
+
+async function assertNoBrowserAuthStorage(page, role) {
+  const suspicious = await page.evaluate(() => {
+    const keys = [];
+    for (const storage of [localStorage, sessionStorage]) {
+      for (let index = 0; index < storage.length; index += 1) {
+        const key = storage.key(index) || "";
+        const value = storage.getItem(key) || "";
+        if (/(token|session|auth|cookie)/i.test(`${key} ${value}`)) keys.push(key);
+      }
+    }
+    return keys;
+  });
+  await assert(suspicious.length === 0, `${role} browser storage has auth-like keys: ${suspicious.join(", ")}`);
+}
+
+async function listUsers(context) {
+  const response = await apiFetch(context, "/admin/users");
+  await assert(response.ok, `Could not list users: ${response.text}`);
+  return response.data;
+}
+
+async function getUser(context, username) {
+  const users = await listUsers(context);
+  return users.find((user) => user.username === username) || null;
+}
+
+async function createUser(context, payload) {
+  const response = await apiFetch(context, "/admin/users", { method: "POST", body: payload });
+  await assert(response.ok, `Could not create ${payload.username}: ${response.text}`);
+  return response.data;
+}
+
+async function disableUser(context, user) {
+  if (!user?.id || user.is_active === false) return;
+  const response = await apiFetch(context, `/admin/users/${user.id}/disable`, { method: "POST" });
+  await assert(response.ok, `Could not disable ${user.username}: ${response.text}`);
+  user.disabledAtCleanup = true;
+}
+
+function userRow(page, username) {
+  return page.locator("article.admin-row").filter({ hasText: username }).first();
+}
+
+async function createDisposableUsers(context, page) {
+  if (!createUsers || !includeAdminUserCreation) {
+    await skip("setup", "Disposable demo user creation", "Disabled by DEMO_ROLES_CREATE_USERS or DEMO_ROLES_INCLUDE_ADMIN_USER_CREATION.");
+    return;
+  }
+  const analyst = (await getUser(context, analystUsername)) || (await createUser(context, {
+    username: analystUsername,
+    display_name: "Demo Analyst",
+    role: "analyst",
+    password: analystPassword,
+  }));
+  const viewer = (await getUser(context, viewerUsername)) || (await createUser(context, {
+    username: viewerUsername,
+    display_name: "Demo Viewer",
+    role: "viewer",
+    password: viewerPassword,
+  }));
+  createdUsers.push({ ...analyst }, { ...viewer });
+  await showCaption(page, "Disposable analyst and viewer accounts are created for the role walkthroughs.");
+  await pass("setup", "Disposable role demo users created");
+}
+
+async function firstIncident(context) {
+  const response = await apiFetch(context, "/incidents?archived=all&limit=1");
+  if (!response.ok) return null;
+  if (Array.isArray(response.data)) return response.data[0] || null;
+  return response.data?.items?.[0] || null;
+}
+
+async function openFirstIncident(page, context, role) {
+  const incident = await firstIncident(context);
+  if (!incident) {
+    await skip(role, "Incident detail", "No incident exists in this database.");
+    await showCaption(page, "No incidents are available in this lab database, so incident detail is skipped.");
+    return null;
+  }
+  await goto(page, `/incidents/${incident.id}`, `${role} opens an incident detail page.`);
+  return incident;
+}
+
+async function demonstrateDashboard(page, role) {
+  await goto(page, "/dashboard", `${role} dashboard: incidents, alert events, and event-weighted analytics.`);
+  await showCaption(page, "Total incidents counts stored cases; Total alert events counts correlated alert volume.");
+  await smoothScrollBy(page, 420);
+  await scrollToText(page, "Alert/Event Evolution", "Alert/Event Evolution shows how activity changes over time.");
+  await scrollToText(page, "MITRE ATT&CK Distribution", "MITRE, severity, decision, and agent charts summarize the SOC workload.");
+  await scrollToText(page, "Severity Distribution");
+  await scrollToText(page, "Decision Distribution");
+  await scrollToText(page, "Top Agents");
+}
+
+async function demonstrateAnalytics(page) {
+  await goto(page, "/analytics/alerts", "Full alert timeline with range controls and drilldowns.");
+  for (const range of ["24h", "7d", "1m", "1y"]) {
+    await clickWithCursor(page, page.getByRole("button", { name: range }), `Timeline range: ${range}`);
+  }
+  const bucket = page.locator("a.bar-column-link").first();
+  if (await bucket.count()) {
+    await clickWithCursor(page, bucket, "Opening a positive alert bucket drilldown when available.");
+    await waitForPage(page);
+    await smoothScrollBy(page, 900);
+    await goto(page, "/analytics/alerts", "Back to the full timeline.");
+  }
+
+  await goto(page, "/analytics/mitre", "MITRE analytics shows complete event-weighted technique distribution.");
+  await smoothScrollBy(page, 760);
+  const firstTechnique = page.locator("main a.analytics-row").first();
+  if (await firstTechnique.count()) {
+    await clickWithCursor(page, firstTechnique, "Opening a MITRE-filtered drilldown.");
+    await waitForPage(page);
+  }
+}
+
+async function demonstrateIncidentDetail(page, context, role, readOnly = false) {
+  await goto(page, "/incidents", `${role} opens incidents with filters, archive scope, date scope, and progressive loading.`);
+  await clickWithCursor(page, page.getByLabel("Archive scope"), "Archive scope controls active, archived, or all incidents.");
+  await clickWithCursor(page, page.getByLabel("Severity"), "Severity and search filters narrow the queue.");
+  await clickWithCursor(page, page.getByLabel("Date scope"), "Date scope filters day, month, year, or all history.");
+  await smoothScrollBy(page, 1400);
+  const incident = await openFirstIncident(page, context, role);
+  if (!incident) return null;
+
+  for (const label of ["Incident Overview", "AI Analysis", "Alert Activity", "Observables", "Manual Playbook", "Notes", "Timeline", "Action History", "Response Actions"]) {
+    if (!(await scrollToText(page, label, `${role} reviews ${label}.`))) {
+      await skip(role, label, `${label} not present for this incident.`);
+    }
+  }
+  const body = await page.locator("body").innerText();
+  await assert(!/stdout\s*:|stderr\s*:|disable-adaccount|iptables\s+-(a|c)/i.test(body), "Response action UI exposes raw command/output text.");
+  if (readOnly) {
+    for (const buttonName of [/approve/i, /reject/i, /^archive$/i, /unarchive/i, /execute/i, /add note/i, /save/i]) {
+      await assert((await page.getByRole("button", { name: buttonName }).count()) === 0, `${role} sees mutating button ${buttonName}.`);
+    }
+  }
+  return incident;
+}
+
+async function demonstrateAdminUsers(page, context) {
+  await goto(page, "/admin/users", "Super admin user management: RBAC, user creation, Save, reset, and disable controls.");
+  await assert(await page.getByRole("button", { name: /create user/i }).isVisible(), "/admin/users did not load.");
+  await createDisposableUsers(context, page);
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await waitForPage(page);
+  await installVisualHelpers(page);
+  await assert(await userRow(page, analystUsername).isVisible(), "Disposable analyst row missing.");
+  await assert(await userRow(page, viewerUsername).isVisible(), "Disposable viewer row missing.");
+
+  const analystRow = userRow(page, analystUsername);
+  await fillWithCursor(page, analystRow.getByLabel("Display name"), "Demo Analyst Saved");
+  await clickWithCursor(page, page.getByRole("heading", { name: /admin users/i }), "Edits are local until the row Save button is clicked.");
+  const beforeSave = await getUser(context, analystUsername);
+  await assert(beforeSave?.display_name !== "Demo Analyst Saved", "Display name saved before clicking Save.");
+  await clickWithCursor(page, analystRow.getByRole("button", { name: /save changes/i }), "Now Save changes writes the update and creates one audit event.");
+  await page.locator(".alert.success").filter({ hasText: /user updated/i }).waitFor({ timeout: 8000 });
+  const afterSave = await getUser(context, analystUsername);
+  await assert(afterSave?.display_name === "Demo Analyst Saved", "Display name was not saved after clicking Save.");
+
+  const viewerRow = userRow(page, viewerUsername);
+  await fillWithCursor(page, viewerRow.getByLabel("New password"), viewerResetPassword);
+  await clickWithCursor(page, page.getByRole("heading", { name: /admin users/i }), "Password reset stays explicit; blur does not change the password.");
+  await clickWithCursor(page, viewerRow.getByRole("button", { name: /reset password/i }), "Reset password is a separate explicit action.");
+  viewerLoginPassword = viewerResetPassword;
+  await page.locator(".alert.success").filter({ hasText: /password reset/i }).waitFor({ timeout: 8000 });
+  await showCaption(page, "Enable and Disable are separate explicit controls; users are never deleted by the demo.");
+}
+
+async function demonstrateAudit(page) {
+  await goto(page, "/admin/audit", "Audit review: login, user, permission, report, and response-action events.");
+  await assert(await page.getByRole("heading", { name: /audit/i }).first().isVisible(), "/admin/audit did not load.");
+  await scrollToText(page, "Audit Metrics", "Audit metrics summarize recent operational security activity.");
+  await scrollToText(page, "Audit Events", "Audit events preserve what happened without leaking secrets.");
+  await smoothScrollBy(page, 760);
+}
+
+async function demonstrateReport(page, role) {
+  await goto(page, "/report", `${role} report page.`);
+  await assert(await page.getByRole("heading", { name: "Report", level: 1 }).isVisible(), "/report did not load.");
+  if (role !== "super_admin" || !generateReport) {
+    await skip(role, "Report generation", role === "super_admin" ? "DEMO_ROLES_GENERATE_REPORT=false." : "Role videos do not generate report by default.");
+    await showCaption(page, "Report generation is available here, but role videos skip it by default.");
+    return;
+  }
+  const button = page.getByRole("button", { name: /generate report/i }).first();
+  await clickWithCursor(page, button, "Generating the report once in the super-admin role video.");
+  await page.waitForFunction(
+    () => /generated report|no incidents found|report generation failed/i.test(document.body.textContent || ""),
+    null,
+    { timeout: 90000 },
+  );
+}
+
+async function confirmForbidden(page, context, role, pathname, apiPath) {
+  if (!includeForbiddenChecks) {
+    await skip(role, pathname, "DEMO_ROLES_INCLUDE_FORBIDDEN_CHECKS=false.");
+    return;
+  }
+  const api = await apiFetch(context, apiPath);
+  await assert(api.status === 403, `${role} ${apiPath} should return 403, got ${api.status}.`);
+  await goto(page, pathname, `${role} tries ${pathname}; backend RBAC blocks access.`);
+  const body = await page.locator("body").innerText().catch(() => "");
+  await assert(/forbidden|cannot|unauthorized|required|login/i.test(body), `${role} forbidden page did not show an access-denied state.`);
+}
+
+async function recordSuperAdmin(browser) {
+  const recording = await createRecordedContext(browser, "role-super-admin.webm");
+  const { context, page } = recording;
+  activePage = page;
+  await runRole("super_admin", "Super admin role video", async () => {
+    await loginAs(page, adminUsername, adminPassword, "Super admin");
+    const me = await apiFetch(context, "/auth/me");
+    await assert(me.ok, `/auth/me failed: ${me.text}`);
+    await assert(me.data?.role === "super_admin" || me.data?.permissions?.includes("manage_users"), "Admin must have manage_users or super_admin role.");
+    await assertNoBrowserAuthStorage(page, "super_admin");
+    await demonstrateDashboard(page, "Super admin");
+    await demonstrateAnalytics(page);
+    await demonstrateIncidentDetail(page, context, "Super admin");
+    await demonstrateAdminUsers(page, context);
+    await demonstrateAudit(page);
+    await demonstrateReport(page, "super_admin");
+  });
+  await hideCaption(page);
+  await closeRecordedContext(recording, "super_admin");
+}
+
+async function recordAnalyst(browser) {
+  const recording = await createRecordedContext(browser, "role-analyst.webm");
+  const { context, page } = recording;
+  activePage = page;
+  await runRole("analyst", "Analyst role video", async () => {
+    await loginAs(page, analystUsername, analystPassword, "Analyst");
+    await assertNoBrowserAuthStorage(page, "analyst");
+    await demonstrateDashboard(page, "Analyst");
+    await demonstrateIncidentDetail(page, context, "Analyst");
+    await confirmForbidden(page, context, "analyst", "/admin/users", "/admin/users");
+    await confirmForbidden(page, context, "analyst", "/admin/audit", "/admin/audit-events");
+    await demonstrateReport(page, "analyst");
+  });
+  await hideCaption(page);
+  await closeRecordedContext(recording, "analyst");
+}
+
+async function recordViewer(browser) {
+  const recording = await createRecordedContext(browser, "role-viewer.webm");
+  const { context, page } = recording;
+  activePage = page;
+  await runRole("viewer", "Viewer role video", async () => {
+    await loginAs(page, viewerUsername, viewerLoginPassword, "Viewer");
+    await assertNoBrowserAuthStorage(page, "viewer");
+    await demonstrateDashboard(page, "Viewer");
+    const incident = await demonstrateIncidentDetail(page, context, "Viewer", true);
+    if (incident) {
+      for (const actionPath of [`/incidents/${incident.id}/approve`, `/incidents/${incident.id}/reject`, `/incidents/${incident.id}/archive`]) {
+        const response = await apiFetch(context, actionPath, { method: "POST" });
+        await assert(response.status === 403, `${actionPath} should return 403 for viewer, got ${response.status}.`);
+      }
+      await showCaption(page, "Backend checks also return 403 for forbidden viewer mutations.");
+    }
+    await confirmForbidden(page, context, "viewer", "/admin/users", "/admin/users");
+    await confirmForbidden(page, context, "viewer", "/admin/audit", "/admin/audit-events");
+    await demonstrateReport(page, "viewer");
+  });
+  await hideCaption(page);
+  await closeRecordedContext(recording, "viewer");
+}
+
+async function cleanupUsers(browser) {
+  if (!disableCreatedUsers || createdUsers.length === 0) {
+    await skip("cleanup", "Disable disposable demo users", disableCreatedUsers ? "No created users." : "DEMO_ROLES_DISABLE_CREATED_USERS=false.");
+    return;
+  }
+  const context = await browser.newContext();
+  await context.addInitScript(() => localStorage.setItem("soc_theme", "dark"));
+  const page = await context.newPage();
+  activePage = page;
+  try {
+    await loginAs(page, adminUsername, adminPassword, "Cleanup admin");
+    for (const createdUser of createdUsers) {
+      const latest = await getUser(context, createdUser.username).catch(() => null);
+      if (latest) {
+        await disableUser(context, latest);
+        createdUser.disabledAtCleanup = true;
+      }
+    }
+    await pass("cleanup", "Disabled disposable demo users");
+  } catch (error) {
+    await fail("cleanup", "Disable disposable demo users", error);
+  } finally {
+    await context.close().catch(() => undefined);
+  }
+}
+
+async function main() {
+  await fs.mkdir(outputDir, { recursive: true });
+  await fs.mkdir(screenshotsDir, { recursive: true });
+  for (const fileName of ["role-super-admin.webm", "role-analyst.webm", "role-viewer.webm", "role-demo-results.json"]) {
+    await fs.rm(path.join(outputDir, fileName), { force: true });
+  }
+  await info("setup", `Role demo frontend URL: ${frontendUrl}`);
+  await info("setup", `Role demo output dir: ${outputDir}`);
+  const { chromium } = await loadPlaywright();
+  const browser = await chromium.launch({ headless, slowMo });
+  try {
+    await recordSuperAdmin(browser);
+    await recordAnalyst(browser);
+    await recordViewer(browser);
+  } finally {
+    await cleanupUsers(browser).catch(async (error) => fail("cleanup", "Cleanup crashed", error));
+    await browser.close().catch(() => undefined);
+    await writeResults();
+  }
+  process.exitCode = failureCount > 0 ? 1 : 0;
+}
+
+main().catch(async (error) => {
+  await fail("setup", "Role demo recorder crashed", error);
+  await writeResults();
+  process.exitCode = 1;
+});
