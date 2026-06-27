@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "demo:record": "node scripts/record-demo.mjs",
+    "smoke:admin": "node scripts/smoke-admin-rbac-response-actions.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "eslint ."

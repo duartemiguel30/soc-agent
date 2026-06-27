@@ -14,4 +14,6 @@ frontend/.env.*
 frontend/.env.demo
 !frontend/.env.example
 demo-output/
+smoke-output/
+frontend/smoke-output/
 .python-version
