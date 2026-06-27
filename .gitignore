@@ -11,4 +11,5 @@ frontend/out/
 frontend/.env
 frontend/.env.*
 !frontend/.env.example
+demo-output/
 .python-version

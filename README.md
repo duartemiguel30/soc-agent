@@ -346,6 +346,50 @@ Current UI pages:
 
 The frontend uses FastAPI's HttpOnly cookie through `/backend/*`. It uses `localStorage` only for the `soc_theme` preference and does not store auth tokens in `localStorage` or `sessionStorage`.
 
+## Automated Demo Recording
+
+The frontend includes a Playwright-based demo recorder for local presentations. It navigates the admin console, injects temporary on-screen captions, and records a browser video without changing app code or storing auth tokens in browser storage. The demo is read-only for incident data.
+
+Prerequisites:
+
+- Backend running, for example `http://192.168.56.105:8000`.
+- Frontend running, for example `http://192.168.56.105:3000`.
+- Frontend npm dependencies installed.
+- Playwright installed locally for demo tooling: `npm install --save-dev playwright` and `npx playwright install chromium`.
+
+Run from `frontend/`:
+
+```bash
+DEMO_ADMIN_USERNAME=admin DEMO_ADMIN_PASSWORD=admin npm run demo:record
+```
+
+Optional variables:
+
+- `DEMO_FRONTEND_URL`: defaults to `http://192.168.56.105:3000`.
+- `DEMO_BASE_URL`: legacy fallback if `DEMO_FRONTEND_URL` is not set.
+- `DEMO_ADMIN_USERNAME`: defaults to `admin` for local demo convenience.
+- `DEMO_ADMIN_PASSWORD`: defaults to `admin` for local demo convenience.
+- `DEMO_HEADLESS`: defaults to `true`; set `DEMO_HEADLESS=false` to show the browser.
+- `DEMO_SLOW_MO_MS`: defaults to `120`.
+- `DEMO_STEP_PAUSE_MS`: defaults to `1600`.
+- `DEMO_TOGGLE_THEME=true`: toggles light/dark mode once during the recording.
+
+The output video is saved at:
+
+```text
+demo-output/soc-ai-agent-demo.webm
+```
+
+Optional MP4 conversion if `ffmpeg` is installed:
+
+```bash
+ffmpeg -y -i demo-output/soc-ai-agent-demo.webm demo-output/soc-ai-agent-demo.mp4
+```
+
+The demo covers dashboard metrics, Alert/Event Evolution, alert timeline drilldowns, MITRE analytics, incident filters and progressive loading, incident detail sections, response-action availability, and `/report`.
+
+The demo flow opens pages, changes read-only filters, scrolls, opens drilldowns, opens an incident detail, and visits `/report`; it does not approve, reject, archive, unarchive, execute response actions, create notes, update playbook steps, or create playbooks.
+
 ## Validation
 
 Common validation commands:
