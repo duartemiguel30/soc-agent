@@ -17,7 +17,10 @@ The backend is FastAPI with SQLite persistence. The primary admin UI is the Next
 - Alert correlation/deduplication groups repeated Wazuh alerts into one incident with event count, first seen, and last seen metadata.
 - Analyst-controlled response actions:
   - `block_source_ip`
-  - `disable_ad_account` in disabled/dry-run-only mode
+  - `disable_ad_account`
+  - `isolate_endpoint`
+  - `collect_host_context`
+- Policy-gated automatic response actions, disabled and dry-run by default.
 - Read-only `/report` endpoint that generates an executive summary from stored incidents.
 
 ## Safety Model
@@ -25,7 +28,7 @@ The backend is FastAPI with SQLite persistence. The primary admin UI is the Next
 This project is intentionally conservative.
 
 - Gemini can recommend actions, but it does not execute them.
-- Wazuh ingestion does not execute response actions.
+- Wazuh ingestion only evaluates automatic response actions after a new incident is created and analyzed. Automation is disabled by default and never runs for duplicate or correlated follow-up alert events.
 - Incident detail viewing is read-only unless the analyst explicitly submits notes, creates a playbook, changes checklist state, archives/unarchives, approves/rejects, or executes a response action.
 - Manual playbooks are created only by `POST /incidents/{id}/playbook`.
 - Response action dry-run previews are logged only to admin audit events, not incident action history.
@@ -33,7 +36,8 @@ This project is intentionally conservative.
 - `response_action_executed` is reserved for real executed actions.
 - `response_action_dry_run_confirmed` records analyst-confirmed simulations where no real system state changed.
 - `response_action_failed` records failed requested actions or policy failures.
-- AD account disable is disabled by default and real AD execution is not implemented.
+- AD account disable, endpoint isolation, and host context command execution are disabled by default.
+- Destructive actions require explicit configuration and still enforce per-action safeguards.
 - `/report` is read-only and does not write incident history.
 
 Do not commit `.env`, `incidents.db`, `venv/`, `__pycache__/`, `.next/`, `node_modules/`, API keys, cookies, session tokens, password hashes, passwords, AD credentials, or other secrets.
@@ -50,11 +54,32 @@ SESSION_IDLE_TIMEOUT_MINUTES=30
 INCIDENT_CORRELATION_WINDOW_MINUTES=15
 
 RESPONSE_ACTIONS_ENABLED=true
+
+AUTO_RESPONSE_ACTIONS_ENABLED=false
+AUTO_RESPONSE_ACTION_MODE=dry_run
+AUTO_RESPONSE_ALLOWED_ACTIONS=block_source_ip,isolate_endpoint
+AUTO_RESPONSE_MIN_SEVERITY=high
+AUTO_RESPONSE_REQUIRE_DECISION=auto_response
+
 AD_ACTIONS_ENABLED=false
 AD_ACTION_MODE=dry_run
 AD_DOMAIN=WINDOMAIN
-AD_DOMAIN_CONTROLLER=dc.windomain.local
+AD_LDAP_SERVER=
+AD_BASE_DN=DC=windomain,DC=local
+AD_BIND_DN=
+AD_BIND_PASSWORD=
 AD_PROTECTED_USERS=Administrator,admin,krbtgt,vagrant,Domain Admins,Enterprise Admins,Schema Admins
+
+ENDPOINT_ISOLATION_ENABLED=false
+ENDPOINT_ISOLATION_MODE=dry_run
+ENDPOINT_ISOLATION_PROTECTED_HOSTS=dc,wef,logger,dc.windomain.local,wef.windomain.local,192.168.56.102,192.168.56.103,192.168.56.105
+ENDPOINT_ISOLATION_COMMAND_TEMPLATE=
+ENDPOINT_ISOLATION_TIMEOUT_SECONDS=20
+
+HOST_CONTEXT_COLLECTION_ENABLED=false
+HOST_CONTEXT_COLLECTION_MODE=dry_run
+HOST_CONTEXT_COMMAND_TEMPLATE=
+HOST_CONTEXT_TIMEOUT_SECONDS=20
 ```
 
 `AUTH_COOKIE_SECURE=false` is for local HTTP lab use. Set it to `true` behind HTTPS.
@@ -74,7 +99,7 @@ Backend permission checks are authoritative. The frontend hides unavailable cont
 
 `INCIDENT_CORRELATION_WINDOW_MINUTES` controls how long repeated related Wazuh alerts are grouped into an existing active incident. The default is 15 minutes.
 
-`AD_DOMAIN` and `AD_DOMAIN_CONTROLLER` are lab/runtime labels used in dry-run output. They are not credentials. Do not add AD credential placeholders to `.env.example`, and do not hardcode AD credentials.
+`AD_BIND_PASSWORD` and command credentials belong only in local `.env`, never in committed files. `.env.example` documents empty placeholders only.
 
 ## Running The Backend
 
@@ -86,7 +111,14 @@ source venv/bin/activate
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-The repository does not currently include a Python requirements file. Use the existing lab virtual environment or document dependencies separately before rebuilding the environment from scratch.
+The repository does not currently include a Python requirements file. Use the existing lab virtual environment or document dependencies separately before rebuilding the environment from scratch. Real AD LDAP execution requires the optional `ldap3` package in the runtime environment; dry-run mode does not require it.
+
+Install `ldap3` only in the lab/runtime venv where real AD LDAP execution is intentionally tested:
+
+```bash
+source venv/bin/activate
+pip install ldap3
+```
 
 ## Admin User Setup
 
@@ -198,7 +230,7 @@ Incident API responses include:
 
 Older incidents with no alert-event rows report `event_count=1`, with `first_seen` and `last_seen` falling back to `created_at`.
 
-When a correlated alert provides additional observables, ingestion merges them into the same incident using the existing unique observable constraint. This can make response actions available later, but webhook ingestion still does not execute response actions.
+When a correlated alert provides additional observables, ingestion merges them into the same incident using the existing unique observable constraint. This can make response actions available later, but automatic response policy only evaluates newly created incidents, not duplicate or correlated follow-up events.
 
 ## Response Actions
 
@@ -209,6 +241,20 @@ Response actions appear on `/incidents/{id}` in the Next.js UI and are available
 - Unavailable actions: compact explanations only. They show the action name, unavailable reason, and required observables/config, but no execute controls.
 
 Suggestion metadata is deterministic. It does not call Gemini and does not execute actions.
+
+### Automatic Response Policy
+
+Automatic response actions are controlled by:
+
+- `AUTO_RESPONSE_ACTIONS_ENABLED=false`
+- `AUTO_RESPONSE_ACTION_MODE=dry_run`
+- `AUTO_RESPONSE_ALLOWED_ACTIONS=block_source_ip,isolate_endpoint`
+- `AUTO_RESPONSE_MIN_SEVERITY=high`
+- `AUTO_RESPONSE_REQUIRE_DECISION=auto_response`
+
+Automation runs only after a new incident is created and AI analysis fields are stored. It does not run for exact duplicate alert hashes, correlated follow-up events, archived incidents, or incidents already approved/rejected. Failures are best-effort: they are logged, but they do not break webhook ingestion or incident creation.
+
+Automated actor is `system:auto_response`. Automated dry-runs, executions, unavailable actions, and failures are written to incident action history and admin audit without secrets.
 
 ### `block_source_ip`
 
@@ -223,10 +269,11 @@ Suggestion metadata is deterministic. It does not call Gemini and does not execu
 - Requires `target_username`, `subject_username`, or `user`.
 - Disabled by default with `AD_ACTIONS_ENABLED=false`.
 - In `AD_ACTION_MODE=dry_run`, even explicit analyst confirmation does not disable an account.
+- In `AD_ACTION_MODE=execute`, real LDAP execution requires `AD_LDAP_SERVER`, `AD_BASE_DN`, `AD_BIND_DN`, `AD_BIND_PASSWORD`, the optional Python package `ldap3`, a valid target username, and a non-protected target.
 - If AD actions are disabled by configuration, the UI shows only compact unavailable status and does not show confirmation, reason, or execute controls.
 - The UI requires typing `DISABLE_ACCOUNT` and entering a reason before recording a dry-run confirmation.
 - Successful AD dry-run confirmation logs `response_action_dry_run_confirmed`, not `response_action_executed`.
-- Real WinRM/PowerShell AD disable execution is not implemented.
+- Real execution locates the account by `sAMAccountName`, reads `userAccountControl`, sets the disabled bit, and returns a structured result.
 
 High-risk AD dry-run confirmation request body:
 
@@ -236,7 +283,30 @@ High-risk AD dry-run confirmation request body:
 
 Username safety checks reject unsupported characters, machine accounts, protected usernames such as `Administrator`, `admin`, `krbtgt`, `vagrant`, admin-like names, and additional entries in `AD_PROTECTED_USERS`.
 
-Real AD execution is future work. If implemented later, credential handling must be designed separately and reviewed. Real execution should require explicit approval, lab testing, rollback procedure, audited execution, and safe credential storage outside code and `.env.example`.
+LDAP bind failures are reported generically. Bind passwords and command credentials must not be logged or committed.
+
+### `isolate_endpoint`
+
+- Risk: critical.
+- Requires a host/agent/IP observable.
+- Disabled by default with `ENDPOINT_ISOLATION_ENABLED=false`.
+- Dry-run by default with `ENDPOINT_ISOLATION_MODE=dry_run`.
+- Execute mode requires `ENDPOINT_ISOLATION_COMMAND_TEMPLATE`.
+- Protected hosts/IPs in `ENDPOINT_ISOLATION_PROTECTED_HOSTS` cannot be isolated.
+- Command templates support `{host}`, `{agent}`, `{agent_ip}`, and `{incident_id}` placeholders.
+- Commands run with `ENDPOINT_ISOLATION_TIMEOUT_SECONDS` and stdout/stderr are truncated before returning.
+
+No destructive command is hardcoded. The command template must be supplied explicitly in local runtime configuration.
+
+### `collect_host_context`
+
+- Risk: low.
+- Requires a host/agent/IP observable.
+- Disabled by default with `HOST_CONTEXT_COLLECTION_ENABLED=false`.
+- Dry-run by default with `HOST_CONTEXT_COLLECTION_MODE=dry_run`.
+- Execute mode requires `HOST_CONTEXT_COMMAND_TEMPLATE`.
+- Uses the same `{host}`, `{agent}`, `{agent_ip}`, and `{incident_id}` placeholders and timeout pattern.
+- Intended for non-destructive collection or demo-safe simulation.
 
 ## Manual Playbooks, Notes, Timeline, And Archive
 
@@ -528,15 +598,20 @@ Manual correlation checks on the logger VM:
 - Re-send the exact same payload; the webhook should report it as a duplicate and not add another alert event.
 - Send the same pattern outside the window; a new incident should be created.
 - Archive an incident, then send the same pattern again; the archived incident should not receive new events.
-- Confirm no response action executes from `POST /webhook/wazuh`.
+- Confirm automation is disabled by default.
+- If testing automation, use `AUTO_RESPONSE_ACTIONS_ENABLED=true` with `AUTO_RESPONSE_ACTION_MODE=dry_run` first.
 
 ## Security Checklist
 
 - Keep `.env` and `incidents.db` local.
 - Do not commit secrets, hashes, cookies, session tokens, or AD credentials.
-- Keep `AD_ACTIONS_ENABLED=false` unless intentionally testing the dry-run AD workflow.
+- Keep `AUTO_RESPONSE_ACTIONS_ENABLED=false` unless intentionally testing policy-gated automation.
+- Keep `AUTO_RESPONSE_ACTION_MODE=dry_run` for demos.
+- Keep `AD_ACTIONS_ENABLED=false` unless intentionally testing the AD workflow.
 - Keep `AD_ACTION_MODE=dry_run` for demos.
 - Do not treat AD dry-run confirmation as real account disablement.
-- Do not add automatic response execution to `/webhook/wazuh`.
+- Keep `ENDPOINT_ISOLATION_ENABLED=false` unless intentionally testing endpoint isolation.
+- Keep `ENDPOINT_ISOLATION_MODE=dry_run` for demos.
+- Keep `HOST_CONTEXT_COLLECTION_ENABLED=false` unless intentionally testing host context collection.
 - Do not let Gemini directly execute defensive actions.
 - Keep `/report` read-only.

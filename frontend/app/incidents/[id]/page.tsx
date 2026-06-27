@@ -71,6 +71,34 @@ function resultText(result?: ResponseActionResult | null) {
   return JSON.stringify(result);
 }
 
+function actionStatusBadges(action: ResponseAction, group?: "suggested" | "available") {
+  const badges: { label: string; className?: string }[] = [{ label: "Manual" }];
+  if (action.automation_eligible) {
+    badges.push({ label: "Automated", className: "available" });
+  }
+  if (action.automated_attempt) {
+    badges.push({
+      label: action.automated_attempt.status === "executed" ? "Auto executed" : "Auto dry-run",
+      className: action.automated_attempt.status === "executed" ? "available" : undefined,
+    });
+  }
+  if (action.availability_status === "protected") {
+    badges.push({ label: "Protected", className: "risk-critical" });
+  } else if (!action.available) {
+    badges.push({ label: "Unavailable", className: "unavailable" });
+  }
+  if (action.mode === "dry_run" || action.dry_run?.mode === "dry_run") {
+    badges.push({ label: "Dry-run" });
+  }
+  if (action.result_status === "executed") {
+    badges.push({ label: "Executed", className: "available" });
+  }
+  if (group) {
+    badges.push({ label: group === "suggested" ? "Suggested" : "Available", className: "available" });
+  }
+  return badges;
+}
+
 function isAdDryRunAction(action: ResponseAction) {
   return action.key === "disable_ad_account" && action.dry_run?.mode === "dry_run";
 }
@@ -309,14 +337,24 @@ export default function IncidentDetailPage() {
           </div>
           <div className="badge-row">
             <span className={`badge risk-${action.risk_level}`}>{labelValue(action.risk_level)}</span>
-            {adDryRun ? <span className="badge">Dry-run</span> : null}
-            <span className="badge available">{group === "suggested" ? "Suggested" : "Available"}</span>
+            {actionStatusBadges(action, group).map((badge) => (
+              <span className={badge.className ? `badge ${badge.className}` : "badge"} key={badge.label}>
+                {badge.label}
+              </span>
+            ))}
           </div>
         </div>
         <div className="response-action-meta">
           <span>Requires: {action.required_observables.map(labelValue).join(", ")}</span>
           <span>{action.suggested_reason || action.availability_reason}</span>
           {adDryRun ? <span>No AD account will be disabled in dry-run mode.</span> : null}
+          {action.automation_eligible ? <span>Automation policy may run this action for matching new incidents.</span> : null}
+          {action.automated_attempt ? (
+            <span>
+              Last automated attempt: {labelValue(action.automated_attempt.event_type || "automated")}{" "}
+              {action.automated_attempt.created_at ? `at ${formatIncidentDate(action.automated_attempt.created_at)}` : ""}
+            </span>
+          ) : null}
         </div>
         {previewText ? <div className="dry-run-output">{previewText}</div> : null}
         {canExecute && needsAdConfirm && adDryRun ? (
@@ -731,6 +769,13 @@ export default function IncidentDetailPage() {
                             {groupedResponseActions.unavailable.map((action) => (
                               <div className="unavailable-action-row" key={action.key}>
                                 <strong>{action.name}</strong>
+                                <div className="badge-row">
+                                  {actionStatusBadges(action).map((badge) => (
+                                    <span className={badge.className ? `badge ${badge.className}` : "badge"} key={badge.label}>
+                                      {badge.label}
+                                    </span>
+                                  ))}
+                                </div>
                                 <span>Unavailable: {action.availability_reason}</span>
                                 <small>Requires: {action.required_observables.map(labelValue).join(", ")}</small>
                               </div>

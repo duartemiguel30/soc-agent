@@ -27,7 +27,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from playbooks.service import get_or_create_playbook, load_playbook, log_action_event, template_suggestion
-from response_actions.service import describe_actions, dry_run_action, execute_action, list_observables
+from response_actions.automation import AUTOMATION_ACTOR, run_automated_response_actions
+from response_actions.service import describe_actions, dry_run_action, execute_action, list_observables, safe_action_result_for_persistence
 from security import hash_password, hash_session_token, verify_password
 from sqlalchemy import func, or_, text
 from sqlalchemy.exc import IntegrityError
@@ -353,6 +354,10 @@ def redact_audit_value(value):
     return value
 
 
+def safe_response_action_result(result: dict) -> dict:
+    return safe_action_result_for_persistence(result)
+
+
 def safe_audit_details(details: dict | None) -> str | None:
     if not details:
         return None
@@ -365,6 +370,8 @@ def log_admin_audit_event(
     event_type: str,
     request: Request | None = None,
     actor: AdminUser | None = None,
+    actor_username: str | None = None,
+    actor_role: str | None = None,
     target_type: str | None = None,
     target_id: str | int | None = None,
     target_username: str | None = None,
@@ -373,8 +380,8 @@ def log_admin_audit_event(
 ) -> AdminAuditEvent:
     event = AdminAuditEvent(
         actor_user_id=getattr(actor, "id", None),
-        actor_username=getattr(actor, "username", None),
-        actor_role=getattr(actor, "role", None),
+        actor_username=getattr(actor, "username", None) or actor_username,
+        actor_role=getattr(actor, "role", None) or actor_role,
         event_type=event_type,
         target_type=target_type,
         target_id=str(target_id) if target_id is not None else None,
@@ -1072,6 +1079,12 @@ def extract_wazuh_observables(alert: dict) -> list[tuple[str, str]]:
     field_map = {
         "agent_name": [("agent", "name")],
         "agent_id": [("agent", "id")],
+        "agent_ip": [
+            ("agent", "ip"),
+            ("agent", "ip_address"),
+            ("data", "agent_ip"),
+            ("data", "agentIp"),
+        ],
         "src_ip": [
             ("srcip",),
             ("src_ip",),
@@ -1825,6 +1838,9 @@ def get_admin_audit_metrics(
                     "response_action_dry_run_confirmed",
                     "response_action_executed",
                     "response_action_failed",
+                    "automated_response_action_dry_run",
+                    "automated_response_action_executed",
+                    "automated_response_action_failed",
                 ]
             ),
         )
@@ -2004,6 +2020,26 @@ async def receive_alert(alert: dict, db: Session = Depends(get_db)):
                     "correlated": True,
                 }
         raise
+
+    try:
+        automation_observables = list_observables(db, incident_id)
+        automation_attempts = run_automated_response_actions(db, incident, automation_observables)
+        for attempt in automation_attempts:
+            log_admin_audit_event(
+                db,
+                attempt["event_type"],
+                actor_username=AUTOMATION_ACTOR,
+                actor_role="system",
+                target_type="incident",
+                target_id=incident_id,
+                success=attempt.get("success", False),
+                details=attempt.get("details"),
+            )
+        if automation_attempts:
+            db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Automated response failed for new incident %s: %s", incident_id, exc)
 
     logger.info(
         f"Incident {incident_id} saved - decision={result.get('decision')} "
@@ -2349,7 +2385,7 @@ def dry_run_incident_response_action(
         target_type="incident",
         target_id=incident_id,
         success=True,
-        details={"action_key": action_key, "result": {key: value for key, value in result.items() if key != "status_code"}},
+        details={"action_key": action_key, "result": safe_response_action_result(result)},
     )
     db.commit()
     return result
@@ -2396,7 +2432,7 @@ def execute_incident_response_action(
         target_type="incident",
         target_id=incident_id,
         success=bool(result.get("ok")),
-        details={"action_key": action_key, "reason": reason, "result": result},
+        details={"action_key": action_key, "reason": reason, "result": safe_response_action_result(result)},
     )
     db.commit()
     if not result.get("ok"):

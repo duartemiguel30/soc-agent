@@ -260,11 +260,16 @@ export type IncidentObservable = {
 export type ResponseActionResult = {
   ok?: boolean;
   mode?: string;
+  status?: string;
   target?: string;
-  command?: string;
+  command_summary?: string | null;
+  returncode?: number;
+  stdout_truncated?: boolean;
+  stderr_truncated?: boolean;
   message?: string;
   needs_human_review?: boolean;
   already_present?: boolean;
+  command_template_configured?: boolean;
   reason?: string | null;
   [key: string]: unknown;
 };
@@ -277,11 +282,21 @@ export type ResponseAction = {
   required_observables: string[];
   available: boolean;
   availability_reason: string;
+  availability_status?: "available" | "unavailable" | "protected" | string;
   needs_human_review?: boolean;
   dry_run?: ResponseActionResult | null;
+  mode?: "dry_run" | "execute" | string | null;
+  result_status?: "manual" | "automated" | "dry_run" | "executed" | "failed" | "unavailable" | "protected" | string | null;
   suggested?: boolean;
   suggested_reason?: string | null;
   category?: "suggested" | "available" | "unavailable" | string;
+  automation_eligible?: boolean;
+  automated_attempt?: {
+    event_type?: string;
+    created_at?: string | null;
+    status?: string | null;
+    mode?: string | null;
+  } | null;
 };
 
 export type TimelineEvent = {
