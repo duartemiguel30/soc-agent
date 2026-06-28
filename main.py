@@ -9,6 +9,7 @@ from datetime import date, datetime, timedelta, timezone
 from agent.graph import build_graph
 from db.database import Base, engine, get_db
 from db.models import (
+    AdminAuditEvent,
     AdminSession,
     AdminUser,
     Incident,
@@ -24,10 +25,11 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, s
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from playbooks.service import get_or_create_playbook, load_playbook, log_action_event, template_suggestion
-from response_actions.service import describe_actions, dry_run_action, execute_action, list_observables
-from security import hash_session_token, verify_password
+from response_actions.automation import AUTOMATION_ACTOR, run_automated_response_actions
+from response_actions.service import describe_actions, dry_run_action, execute_action, list_observables, safe_action_result_for_persistence
+from security import hash_password, hash_session_token, verify_password
 from sqlalchemy import func, or_, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -44,6 +46,54 @@ FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "http://192.168.56.105:3000")
 AUTH_COOKIE_NAME = os.getenv("AUTH_COOKIE_NAME", "soc_admin_session")
 AUTH_COOKIE_SECURE = os.getenv("AUTH_COOKIE_SECURE", "false").lower() in {"1", "true", "yes", "on"}
 INCIDENT_CORRELATION_WINDOW_MINUTES = int(os.getenv("INCIDENT_CORRELATION_WINDOW_MINUTES", "15"))
+
+ROLES = {"super_admin", "admin", "analyst", "viewer"}
+ROLE_PERMISSIONS = {
+    "super_admin": {
+        "view_dashboard",
+        "view_incidents",
+        "triage_incidents",
+        "approve_incidents",
+        "reject_incidents",
+        "archive_incidents",
+        "manage_playbooks",
+        "add_notes",
+        "view_response_actions",
+        "execute_response_actions",
+        "generate_report",
+        "manage_users",
+        "view_audit",
+        "manage_settings",
+    },
+    "admin": {
+        "view_dashboard",
+        "view_incidents",
+        "triage_incidents",
+        "approve_incidents",
+        "reject_incidents",
+        "archive_incidents",
+        "manage_playbooks",
+        "add_notes",
+        "view_response_actions",
+        "execute_response_actions",
+        "generate_report",
+        "view_audit",
+    },
+    "analyst": {
+        "view_dashboard",
+        "view_incidents",
+        "triage_incidents",
+        "manage_playbooks",
+        "add_notes",
+        "view_response_actions",
+        "generate_report",
+    },
+    "viewer": {
+        "view_dashboard",
+        "view_incidents",
+        "generate_report",
+    },
+}
 
 
 def configured_session_idle_timeout_minutes() -> int:
@@ -69,12 +119,48 @@ def configured_session_idle_timeout_minutes() -> int:
 SESSION_IDLE_TIMEOUT_MINUTES = configured_session_idle_timeout_minutes()
 
 
-def ensure_admin_session_activity_column() -> None:
-    """Add the sliding-session activity column for existing SQLite databases."""
+def ensure_admin_schema() -> None:
+    """Apply small SQLite admin/auth migrations that create_all cannot add."""
     with engine.begin() as connection:
-        rows = connection.execute(text("PRAGMA table_info(admin_sessions)")).fetchall()
-        columns = {row[1] for row in rows}
-        if rows and "last_activity_at" not in columns:
+        user_rows = connection.execute(text("PRAGMA table_info(admin_users)")).fetchall()
+        user_columns = {row[1] for row in user_rows}
+        if user_rows and "display_name" not in user_columns:
+            connection.execute(text("ALTER TABLE admin_users ADD COLUMN display_name VARCHAR"))
+        if user_rows and "role" not in user_columns:
+            connection.execute(text("ALTER TABLE admin_users ADD COLUMN role VARCHAR NOT NULL DEFAULT 'admin'"))
+        if user_rows and "is_active" not in user_columns:
+            connection.execute(text("ALTER TABLE admin_users ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT 1"))
+        if user_rows and "created_at" not in user_columns:
+            connection.execute(text("ALTER TABLE admin_users ADD COLUMN created_at DATETIME"))
+            connection.execute(
+                text("UPDATE admin_users SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL")
+            )
+        if user_rows and "updated_at" not in user_columns:
+            connection.execute(text("ALTER TABLE admin_users ADD COLUMN updated_at DATETIME"))
+            connection.execute(
+                text("UPDATE admin_users SET updated_at = CURRENT_TIMESTAMP WHERE updated_at IS NULL")
+            )
+        if user_rows and "last_login_at" not in user_columns:
+            connection.execute(text("ALTER TABLE admin_users ADD COLUMN last_login_at DATETIME"))
+        if user_rows and "created_by" not in user_columns:
+            connection.execute(text("ALTER TABLE admin_users ADD COLUMN created_by INTEGER"))
+        if user_rows:
+            super_admin = connection.execute(
+                text("SELECT id FROM admin_users WHERE role = 'super_admin' AND is_active = 1 LIMIT 1")
+            ).fetchone()
+            if not super_admin:
+                first_admin = connection.execute(
+                    text("SELECT id FROM admin_users WHERE is_active = 1 ORDER BY id ASC LIMIT 1")
+                ).fetchone()
+                if first_admin:
+                    connection.execute(
+                        text("UPDATE admin_users SET role = 'super_admin' WHERE id = :id"),
+                        {"id": first_admin[0]},
+                    )
+
+        session_rows = connection.execute(text("PRAGMA table_info(admin_sessions)")).fetchall()
+        session_columns = {row[1] for row in session_rows}
+        if session_rows and "last_activity_at" not in session_columns:
             connection.execute(text("ALTER TABLE admin_sessions ADD COLUMN last_activity_at DATETIME"))
             connection.execute(
                 text(
@@ -87,7 +173,7 @@ def ensure_admin_session_activity_column() -> None:
             )
 
 
-ensure_admin_session_activity_column()
+ensure_admin_schema()
 
 app.add_middleware(
     CORSMiddleware,
@@ -101,6 +187,23 @@ app.add_middleware(
 class LoginRequest(BaseModel):
     username: str
     password: str
+
+
+class AdminUserCreate(BaseModel):
+    username: str = Field(min_length=1, max_length=80)
+    display_name: str | None = Field(default=None, max_length=120)
+    role: str
+    password: str = Field(min_length=8, max_length=256)
+
+
+class AdminUserUpdate(BaseModel):
+    display_name: str | None = Field(default=None, max_length=120)
+    role: str | None = None
+    is_active: bool | None = None
+
+
+class AdminPasswordReset(BaseModel):
+    password: str = Field(min_length=8, max_length=256)
 
 
 class PlaybookStepUpdate(BaseModel):
@@ -163,6 +266,162 @@ def current_admin_username(admin: dict | None) -> str | None:
         return None
     user = admin.get("user")
     return getattr(user, "username", None)
+
+
+def role_permissions(role: str | None) -> list[str]:
+    return sorted(ROLE_PERMISSIONS.get(role or "viewer", ROLE_PERMISSIONS["viewer"]))
+
+
+def has_permission(admin: dict | None, permission: str) -> bool:
+    if not admin:
+        return False
+    user = admin.get("user")
+    return permission in ROLE_PERMISSIONS.get(getattr(user, "role", None), set())
+
+
+def admin_user_response(admin_user: AdminUser) -> dict:
+    return {
+        "id": admin_user.id,
+        "username": admin_user.username,
+        "display_name": admin_user.display_name,
+        "role": admin_user.role,
+        "permissions": role_permissions(admin_user.role),
+        "is_active": bool(admin_user.is_active),
+        "created_at": admin_user.created_at,
+        "updated_at": admin_user.updated_at,
+        "last_login_at": admin_user.last_login_at,
+        "created_by": admin_user.created_by,
+    }
+
+
+def audit_event_response(event: AdminAuditEvent) -> dict:
+    details = None
+    if event.details_json:
+        try:
+            details = json.loads(event.details_json)
+        except json.JSONDecodeError:
+            details = None
+    return {
+        "id": event.id,
+        "created_at": event.created_at,
+        "actor_user_id": event.actor_user_id,
+        "actor_username": event.actor_username,
+        "actor_role": event.actor_role,
+        "event_type": event.event_type,
+        "target_type": event.target_type,
+        "target_id": event.target_id,
+        "target_username": event.target_username,
+        "ip_address": event.ip_address,
+        "user_agent": event.user_agent,
+        "success": bool(event.success),
+        "details": details,
+    }
+
+
+SENSITIVE_AUDIT_KEY_FRAGMENTS = (
+    "password",
+    "passwd",
+    "secret",
+    "token",
+    "cookie",
+    "session",
+    "authorization",
+    "credential",
+    "bind",
+)
+
+SAFE_AUDIT_KEY_NAMES = {"action_key", "template_key", "correlation_key"}
+
+
+def should_redact_audit_key(key: object) -> bool:
+    normalized = str(key).lower()
+    if normalized in SAFE_AUDIT_KEY_NAMES:
+        return False
+    if any(fragment in normalized for fragment in SENSITIVE_AUDIT_KEY_FRAGMENTS):
+        return True
+    key_tokens = [token for token in normalized.replace("-", "_").split("_") if token]
+    return "auth" in key_tokens or "key" in key_tokens or normalized.endswith("key")
+
+
+def redact_audit_value(value):
+    if isinstance(value, dict):
+        return {
+            key: "[redacted]" if should_redact_audit_key(key) else redact_audit_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [redact_audit_value(item) for item in value]
+    return value
+
+
+def safe_response_action_result(result: dict) -> dict:
+    return safe_action_result_for_persistence(result)
+
+
+def safe_audit_details(details: dict | None) -> str | None:
+    if not details:
+        return None
+    clean = redact_audit_value(details)
+    return json.dumps(clean) if clean else None
+
+
+def log_admin_audit_event(
+    db: Session,
+    event_type: str,
+    request: Request | None = None,
+    actor: AdminUser | None = None,
+    actor_username: str | None = None,
+    actor_role: str | None = None,
+    target_type: str | None = None,
+    target_id: str | int | None = None,
+    target_username: str | None = None,
+    success: bool = True,
+    details: dict | None = None,
+) -> AdminAuditEvent:
+    event = AdminAuditEvent(
+        actor_user_id=getattr(actor, "id", None),
+        actor_username=getattr(actor, "username", None) or actor_username,
+        actor_role=getattr(actor, "role", None) or actor_role,
+        event_type=event_type,
+        target_type=target_type,
+        target_id=str(target_id) if target_id is not None else None,
+        target_username=target_username,
+        ip_address=get_client_ip(request) if request else None,
+        user_agent=request.headers.get("user-agent") if request else None,
+        success=success,
+        details_json=safe_audit_details(details),
+    )
+    db.add(event)
+    return event
+
+
+def validate_role(role: str) -> str:
+    if role not in ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Role must be one of: {', '.join(sorted(ROLES))}",
+        )
+    return role
+
+
+def count_active_super_admins(db: Session) -> int:
+    return (
+        db.query(func.count(AdminUser.id))
+        .filter(AdminUser.role == "super_admin", AdminUser.is_active.is_(True))
+        .scalar()
+        or 0
+    )
+
+
+def assert_not_last_super_admin(db: Session, user: AdminUser, role: str | None = None, is_active: bool | None = None) -> None:
+    next_role = role if role is not None else user.role
+    next_active = is_active if is_active is not None else user.is_active
+    if user.role == "super_admin" and user.is_active and (next_role != "super_admin" or not next_active):
+        if count_active_super_admins(db) <= 1:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot remove the last active super_admin.",
+            )
 
 
 def get_incident_or_404(db: Session, incident_id: str) -> Incident:
@@ -820,6 +1079,12 @@ def extract_wazuh_observables(alert: dict) -> list[tuple[str, str]]:
     field_map = {
         "agent_name": [("agent", "name")],
         "agent_id": [("agent", "id")],
+        "agent_ip": [
+            ("agent", "ip"),
+            ("agent", "ip_address"),
+            ("data", "agent_ip"),
+            ("data", "agentIp"),
+        ],
         "src_ip": [
             ("srcip",),
             ("src_ip",),
@@ -1126,7 +1391,16 @@ def get_current_admin(request: Request, response: Response, db: Session = Depend
     if admin_session.revoked_at is not None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Admin authentication required")
     if admin_session.expires_at <= now:
+        expired_user = db.query(AdminUser).filter(AdminUser.id == admin_session.admin_user_id).first()
         admin_session.revoked_at = now
+        log_admin_audit_event(
+            db,
+            "session_expired",
+            request=request,
+            actor=expired_user,
+            success=False,
+            details={"session_id": admin_session.id},
+        )
         db.commit()
         clear_session_cookie(response)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Admin authentication required")
@@ -1142,13 +1416,56 @@ def get_current_admin(request: Request, response: Response, db: Session = Depend
     return {"user": admin_user, "session": admin_session}
 
 
+def require_permission(permission: str):
+    def dependency(
+        request: Request,
+        admin: dict = Depends(get_current_admin),
+        db: Session = Depends(get_db),
+    ) -> dict:
+        admin_user = admin["user"]
+        if permission not in ROLE_PERMISSIONS.get(admin_user.role, set()):
+            log_admin_audit_event(
+                db,
+                "permission_denied",
+                request=request,
+                actor=admin_user,
+                success=False,
+                details={"permission": permission, "path": str(request.url.path), "method": request.method},
+            )
+            db.commit()
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+        return admin
+
+    return dependency
+
+
 @app.post("/auth/login")
 def login(credentials: LoginRequest, request: Request, response: Response, db: Session = Depends(get_db)):
     admin_user = db.query(AdminUser).filter(AdminUser.username == credentials.username).first()
     if not admin_user or not admin_user.is_active:
+        log_admin_audit_event(
+            db,
+            "login_failed",
+            request=request,
+            target_type="admin_user",
+            target_username=credentials.username,
+            success=False,
+            details={"reason": "invalid_credentials_or_inactive"},
+        )
+        db.commit()
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid admin credentials")
 
     if not verify_password(credentials.password, admin_user.password_hash):
+        log_admin_audit_event(
+            db,
+            "login_failed",
+            request=request,
+            target_type="admin_user",
+            target_username=credentials.username,
+            success=False,
+            details={"reason": "invalid_credentials_or_inactive"},
+        )
+        db.commit()
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid admin credentials")
 
     now = utc_now()
@@ -1164,10 +1481,22 @@ def login(credentials: LoginRequest, request: Request, response: Response, db: S
         client_ip=get_client_ip(request),
     )
     db.add(admin_session)
+    admin_user.last_login_at = now
+    admin_user.updated_at = now
+    log_admin_audit_event(
+        db,
+        "login_success",
+        request=request,
+        actor=admin_user,
+        target_type="admin_user",
+        target_id=admin_user.id,
+        target_username=admin_user.username,
+        success=True,
+    )
     db.commit()
 
     set_session_cookie(response, raw_token, expires_at)
-    return {"username": admin_user.username, "role": admin_user.role}
+    return admin_user_response(admin_user)
 
 
 @app.post("/auth/logout")
@@ -1176,7 +1505,17 @@ def logout(request: Request, response: Response, db: Session = Depends(get_db)):
     if token:
         admin_session = db.query(AdminSession).filter(AdminSession.token_hash == hash_session_token(token)).first()
         if admin_session and admin_session.revoked_at is None:
+            admin_user = db.query(AdminUser).filter(AdminUser.id == admin_session.admin_user_id).first()
             admin_session.revoked_at = utc_now()
+            log_admin_audit_event(
+                db,
+                "logout",
+                request=request,
+                actor=admin_user,
+                target_type="admin_session",
+                target_id=admin_session.id,
+                success=True,
+            )
             db.commit()
     clear_session_cookie(response)
     return {"ok": True}
@@ -1187,13 +1526,344 @@ def me(admin: dict = Depends(get_current_admin)):
     admin_user = admin["user"]
     admin_session = admin["session"]
     return {
+        "id": admin_user.id,
         "username": admin_user.username,
+        "display_name": admin_user.display_name,
         "role": admin_user.role,
+        "permissions": role_permissions(admin_user.role),
         "session": {
             "created_at": admin_session.created_at,
             "last_activity_at": admin_session.last_activity_at,
             "expires_at": admin_session.expires_at,
         },
+    }
+
+
+@app.get("/admin/users")
+def list_admin_users(admin: dict = Depends(require_permission("manage_users")), db: Session = Depends(get_db)):
+    users = db.query(AdminUser).order_by(AdminUser.id.asc()).all()
+    return [admin_user_response(user) for user in users]
+
+
+@app.post("/admin/users")
+def create_admin_user(
+    payload: AdminUserCreate,
+    request: Request,
+    admin: dict = Depends(require_permission("manage_users")),
+    db: Session = Depends(get_db),
+):
+    role = validate_role(payload.role)
+    username = payload.username.strip()
+    if not username:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Username is required")
+
+    actor = admin["user"]
+    user = AdminUser(
+        username=username,
+        display_name=payload.display_name.strip() if payload.display_name else None,
+        role=role,
+        password_hash=hash_password(payload.password),
+        is_active=True,
+        created_at=utc_now(),
+        updated_at=utc_now(),
+        created_by=actor.id,
+    )
+    db.add(user)
+    try:
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Username already exists")
+    log_admin_audit_event(
+        db,
+        "user_created",
+        request=request,
+        actor=actor,
+        target_type="admin_user",
+        target_id=user.id,
+        target_username=user.username,
+        details={"role": user.role, "is_active": user.is_active},
+    )
+    db.commit()
+    db.refresh(user)
+    return admin_user_response(user)
+
+
+@app.get("/admin/users/{user_id}")
+def get_admin_user(
+    user_id: int,
+    admin: dict = Depends(require_permission("manage_users")),
+    db: Session = Depends(get_db),
+):
+    user = db.query(AdminUser).filter(AdminUser.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Admin user not found")
+    return admin_user_response(user)
+
+
+@app.patch("/admin/users/{user_id}")
+def update_admin_user(
+    user_id: int,
+    payload: AdminUserUpdate,
+    request: Request,
+    admin: dict = Depends(require_permission("manage_users")),
+    db: Session = Depends(get_db),
+):
+    user = db.query(AdminUser).filter(AdminUser.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Admin user not found")
+
+    next_role = validate_role(payload.role) if payload.role is not None else user.role
+    next_active = payload.is_active if payload.is_active is not None else user.is_active
+    assert_not_last_super_admin(db, user, next_role, next_active)
+
+    actor = admin["user"]
+    previous_role = user.role
+    previous_active = user.is_active
+    changed: dict[str, object] = {}
+    if payload.display_name is not None and payload.display_name != user.display_name:
+        user.display_name = payload.display_name.strip() or None
+        changed["display_name"] = user.display_name
+    if payload.role is not None and next_role != user.role:
+        user.role = next_role
+        changed["role"] = next_role
+    if payload.is_active is not None and next_active != user.is_active:
+        user.is_active = next_active
+        changed["is_active"] = next_active
+    user.updated_at = utc_now()
+
+    log_admin_audit_event(
+        db,
+        "user_updated",
+        request=request,
+        actor=actor,
+        target_type="admin_user",
+        target_id=user.id,
+        target_username=user.username,
+        details={"changed": changed},
+    )
+    if previous_role != user.role:
+        log_admin_audit_event(
+            db,
+            "role_changed",
+            request=request,
+            actor=actor,
+            target_type="admin_user",
+            target_id=user.id,
+            target_username=user.username,
+            details={"previous_role": previous_role, "role": user.role},
+        )
+    if previous_active and not user.is_active:
+        log_admin_audit_event(
+            db,
+            "user_disabled",
+            request=request,
+            actor=actor,
+            target_type="admin_user",
+            target_id=user.id,
+            target_username=user.username,
+        )
+    elif not previous_active and user.is_active:
+        log_admin_audit_event(
+            db,
+            "user_enabled",
+            request=request,
+            actor=actor,
+            target_type="admin_user",
+            target_id=user.id,
+            target_username=user.username,
+        )
+    db.commit()
+    db.refresh(user)
+    return admin_user_response(user)
+
+
+@app.post("/admin/users/{user_id}/reset-password")
+def reset_admin_user_password(
+    user_id: int,
+    payload: AdminPasswordReset,
+    request: Request,
+    admin: dict = Depends(require_permission("manage_users")),
+    db: Session = Depends(get_db),
+):
+    user = db.query(AdminUser).filter(AdminUser.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Admin user not found")
+    user.password_hash = hash_password(payload.password)
+    user.updated_at = utc_now()
+    log_admin_audit_event(
+        db,
+        "user_password_reset",
+        request=request,
+        actor=admin["user"],
+        target_type="admin_user",
+        target_id=user.id,
+        target_username=user.username,
+    )
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/admin/users/{user_id}/disable")
+def disable_admin_user(
+    user_id: int,
+    request: Request,
+    admin: dict = Depends(require_permission("manage_users")),
+    db: Session = Depends(get_db),
+):
+    user = db.query(AdminUser).filter(AdminUser.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Admin user not found")
+    assert_not_last_super_admin(db, user, is_active=False)
+    user.is_active = False
+    user.updated_at = utc_now()
+    log_admin_audit_event(
+        db,
+        "user_disabled",
+        request=request,
+        actor=admin["user"],
+        target_type="admin_user",
+        target_id=user.id,
+        target_username=user.username,
+    )
+    db.commit()
+    db.refresh(user)
+    return admin_user_response(user)
+
+
+@app.post("/admin/users/{user_id}/enable")
+def enable_admin_user(
+    user_id: int,
+    request: Request,
+    admin: dict = Depends(require_permission("manage_users")),
+    db: Session = Depends(get_db),
+):
+    user = db.query(AdminUser).filter(AdminUser.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Admin user not found")
+    user.is_active = True
+    user.updated_at = utc_now()
+    log_admin_audit_event(
+        db,
+        "user_enabled",
+        request=request,
+        actor=admin["user"],
+        target_type="admin_user",
+        target_id=user.id,
+        target_username=user.username,
+    )
+    db.commit()
+    db.refresh(user)
+    return admin_user_response(user)
+
+
+@app.get("/admin/audit-events")
+def list_admin_audit_events(
+    event_type: str | None = None,
+    actor_username: str | None = None,
+    target_username: str | None = None,
+    success: bool | None = None,
+    from_: str | None = Query(default=None, alias="from"),
+    to: str | None = None,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    admin: dict = Depends(require_permission("view_audit")),
+    db: Session = Depends(get_db),
+):
+    query = db.query(AdminAuditEvent)
+    if event_type:
+        query = query.filter(AdminAuditEvent.event_type == event_type)
+    if actor_username:
+        query = query.filter(AdminAuditEvent.actor_username.ilike(f"%{actor_username.strip()}%"))
+    if target_username:
+        query = query.filter(AdminAuditEvent.target_username.ilike(f"%{target_username.strip()}%"))
+    if success is not None:
+        query = query.filter(AdminAuditEvent.success.is_(success))
+    start = parse_range_datetime(from_, "from")
+    end = parse_range_datetime(to, "to")
+    if start:
+        query = query.filter(AdminAuditEvent.created_at >= start)
+    if end:
+        query = query.filter(AdminAuditEvent.created_at < end)
+
+    total = query.count()
+    events = query.order_by(AdminAuditEvent.created_at.desc(), AdminAuditEvent.id.desc()).offset(offset).limit(limit).all()
+    return {
+        "items": [audit_event_response(event) for event in events],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "has_more": offset + limit < total,
+    }
+
+
+@app.get("/admin/audit-metrics")
+def get_admin_audit_metrics(
+    admin: dict = Depends(require_permission("view_audit")),
+    db: Session = Depends(get_db),
+):
+    now = utc_now()
+    last_24h = now - timedelta(hours=24)
+    last_7d = now - timedelta(days=7)
+
+    def event_count(event_type: str, since: datetime) -> int:
+        return (
+            db.query(func.count(AdminAuditEvent.id))
+            .filter(AdminAuditEvent.event_type == event_type, AdminAuditEvent.created_at >= since)
+            .scalar()
+            or 0
+        )
+
+    actions_by_type_rows = (
+        db.query(AdminAuditEvent.event_type, func.count(AdminAuditEvent.id))
+        .filter(AdminAuditEvent.created_at >= last_7d)
+        .group_by(AdminAuditEvent.event_type)
+        .order_by(func.count(AdminAuditEvent.id).desc())
+        .all()
+    )
+    actions_by_user_rows = (
+        db.query(AdminAuditEvent.actor_username, func.count(AdminAuditEvent.id))
+        .filter(AdminAuditEvent.created_at >= last_7d, AdminAuditEvent.actor_username.isnot(None))
+        .group_by(AdminAuditEvent.actor_username)
+        .order_by(func.count(AdminAuditEvent.id).desc())
+        .all()
+    )
+    response_action_rows = (
+        db.query(AdminAuditEvent.event_type, func.count(AdminAuditEvent.id))
+        .filter(
+            AdminAuditEvent.created_at >= last_7d,
+            AdminAuditEvent.event_type.in_(
+                [
+                    "response_action_dry_run",
+                    "response_action_dry_run_confirmed",
+                    "response_action_executed",
+                    "response_action_failed",
+                    "automated_response_action_dry_run",
+                    "automated_response_action_executed",
+                    "automated_response_action_failed",
+                ]
+            ),
+        )
+        .group_by(AdminAuditEvent.event_type)
+        .all()
+    )
+
+    active_sessions = (
+        db.query(func.count(AdminSession.id))
+        .filter(AdminSession.revoked_at.is_(None), AdminSession.expires_at > now)
+        .scalar()
+        or 0
+    )
+    return {
+        "successful_logins_24h": event_count("login_success", last_24h),
+        "failed_logins_24h": event_count("login_failed", last_24h),
+        "active_sessions": active_sessions,
+        "disabled_users": db.query(func.count(AdminUser.id)).filter(AdminUser.is_active.is_(False)).scalar() or 0,
+        "total_users": db.query(func.count(AdminUser.id)).scalar() or 0,
+        "actions_by_type_7d": {event_type: count for event_type, count in actions_by_type_rows},
+        "actions_by_user_7d": {username: count for username, count in actions_by_user_rows},
+        "permission_denied_7d": event_count("permission_denied", last_7d),
+        "response_actions_7d": {event_type: count for event_type, count in response_action_rows},
     }
 
 
@@ -1351,6 +2021,26 @@ async def receive_alert(alert: dict, db: Session = Depends(get_db)):
                 }
         raise
 
+    try:
+        automation_observables = list_observables(db, incident_id)
+        automation_attempts = run_automated_response_actions(db, incident, automation_observables)
+        for attempt in automation_attempts:
+            log_admin_audit_event(
+                db,
+                attempt["event_type"],
+                actor_username=AUTOMATION_ACTOR,
+                actor_role="system",
+                target_type="incident",
+                target_id=incident_id,
+                success=attempt.get("success", False),
+                details=attempt.get("details"),
+            )
+        if automation_attempts:
+            db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Automated response failed for new incident %s: %s", incident_id, exc)
+
     logger.info(
         f"Incident {incident_id} saved - decision={result.get('decision')} "
         f"confidence={result.get('confidence')}%"
@@ -1378,7 +2068,7 @@ def get_alert_evolution(
     offset: int = 0,
     archived: str = "all",
     db: Session = Depends(get_db),
-    admin: dict = Depends(get_current_admin),
+    admin: dict = Depends(require_permission("view_dashboard")),
 ):
     """Return read-only alert/event counts for dashboard time-series exploration."""
     range_name = (range or "1m").lower()
@@ -1446,7 +2136,7 @@ def get_alert_period(
     limit: int | None = Query(None, ge=1, le=100),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
-    admin: dict = Depends(get_current_admin),
+    admin: dict = Depends(require_permission("view_incidents")),
 ):
     """Return read-only alert events and fallback incidents for a selected timeline bucket."""
     start = parse_range_datetime(from_, "from")
@@ -1540,7 +2230,7 @@ def list_incidents(
     limit: int | None = Query(None, ge=1, le=100),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
-    admin: dict = Depends(get_current_admin),
+    admin: dict = Depends(require_permission("view_incidents")),
 ):
     """List all stored incidents."""
     start = parse_range_datetime(from_, "from")
@@ -1588,14 +2278,14 @@ def list_incidents(
 
 
 @app.get("/incidents/pending")
-def list_pending(db: Session = Depends(get_db), admin: dict = Depends(get_current_admin)):
+def list_pending(db: Session = Depends(get_db), admin: dict = Depends(require_permission("view_incidents"))):
     """List incidents awaiting human review."""
     incidents = db.query(Incident).filter(Incident.status == "pending_human").all()
     return [serialize_incident(incident, get_archive_state(db, incident.id), db) for incident in incidents]
 
 
 @app.get("/incidents/archive")
-def list_archived_incidents(db: Session = Depends(get_db), admin: dict = Depends(get_current_admin)):
+def list_archived_incidents(db: Session = Depends(get_db), admin: dict = Depends(require_permission("view_incidents"))):
     """Return archived incidents with archive metadata."""
     rows = (
         db.query(Incident, IncidentArchiveState)
@@ -1610,7 +2300,7 @@ def list_archived_incidents(db: Session = Depends(get_db), admin: dict = Depends
 def get_incident_detail(
     incident_id: str,
     db: Session = Depends(get_db),
-    admin: dict = Depends(get_current_admin),
+    admin: dict = Depends(require_permission("view_incidents")),
 ):
     """Return a single incident with stored AI analysis fields."""
     incident = get_incident_or_404(db, incident_id)
@@ -1621,7 +2311,7 @@ def get_incident_detail(
 def get_incident_alert_events(
     incident_id: str,
     db: Session = Depends(get_db),
-    admin: dict = Depends(get_current_admin),
+    admin: dict = Depends(require_permission("view_incidents")),
 ):
     """Return compact correlated Wazuh alert events for an incident."""
     get_incident_or_404(db, incident_id)
@@ -1641,7 +2331,7 @@ def get_incident_alert_events(
 def get_incident_observables(
     incident_id: str,
     db: Session = Depends(get_db),
-    admin: dict = Depends(get_current_admin),
+    admin: dict = Depends(require_permission("view_incidents")),
 ):
     """Return extracted incident observables without mutating incident state."""
     get_incident_or_404(db, incident_id)
@@ -1652,7 +2342,7 @@ def get_incident_observables(
 def get_incident_response_actions(
     incident_id: str,
     db: Session = Depends(get_db),
-    admin: dict = Depends(get_current_admin),
+    admin: dict = Depends(require_permission("view_response_actions")),
 ):
     """Return policy-gated response actions and dry-run previews for this incident."""
     incident = get_incident_or_404(db, incident_id)
@@ -1663,18 +2353,41 @@ def get_incident_response_actions(
 def dry_run_incident_response_action(
     incident_id: str,
     action_key: str,
+    request: Request,
     db: Session = Depends(get_db),
-    admin: dict = Depends(get_current_admin),
+    admin: dict = Depends(require_permission("view_response_actions")),
 ):
     """Run response action validation and preview only; dry-runs are not logged to avoid noisy history."""
     get_incident_or_404(db, incident_id)
     result = dry_run_action(db, incident_id, action_key)
     status_code = result.pop("status_code", None)
     if not result.get("ok"):
+        log_admin_audit_event(
+            db,
+            "response_action_dry_run",
+            request=request,
+            actor=admin["user"],
+            target_type="incident",
+            target_id=incident_id,
+            success=False,
+            details={"action_key": action_key, "message": result.get("message")},
+        )
+        db.commit()
         raise HTTPException(
             status_code=status_code or status.HTTP_400_BAD_REQUEST,
             detail=result.get("message") or "Dry-run failed",
         )
+    log_admin_audit_event(
+        db,
+        "response_action_dry_run",
+        request=request,
+        actor=admin["user"],
+        target_type="incident",
+        target_id=incident_id,
+        success=True,
+        details={"action_key": action_key, "result": safe_response_action_result(result)},
+    )
+    db.commit()
     return result
 
 
@@ -1682,9 +2395,10 @@ def dry_run_incident_response_action(
 def execute_incident_response_action(
     incident_id: str,
     action_key: str,
+    request: Request,
     payload: ResponseActionRequest | None = None,
     db: Session = Depends(get_db),
-    admin: dict = Depends(get_current_admin),
+    admin: dict = Depends(require_permission("execute_response_actions")),
 ):
     """Execute a policy-gated response action only after explicit analyst request."""
     get_incident_or_404(db, incident_id)
@@ -1703,6 +2417,24 @@ def execute_incident_response_action(
     reason = payload.reason.strip() if payload and payload.reason else None
     result = execute_action(db, incident_id, action_key, current_admin_username(admin), reason)
     status_code = result.pop("status_code", None)
+    event_type = (
+        "response_action_failed"
+        if not result.get("ok")
+        else "response_action_dry_run_confirmed"
+        if result.get("mode") == "dry_run"
+        else "response_action_executed"
+    )
+    log_admin_audit_event(
+        db,
+        event_type,
+        request=request,
+        actor=admin["user"],
+        target_type="incident",
+        target_id=incident_id,
+        success=bool(result.get("ok")),
+        details={"action_key": action_key, "reason": reason, "result": safe_response_action_result(result)},
+    )
+    db.commit()
     if not result.get("ok"):
         raise HTTPException(
             status_code=status_code or status.HTTP_400_BAD_REQUEST,
@@ -1714,9 +2446,10 @@ def execute_incident_response_action(
 @app.post("/incidents/{incident_id}/archive")
 def archive_incident(
     incident_id: str,
+    request: Request,
     payload: ArchiveRequest | None = None,
     db: Session = Depends(get_db),
-    admin: dict = Depends(get_current_admin),
+    admin: dict = Depends(require_permission("archive_incidents")),
 ):
     """Archive an incident for dashboard/list visibility without changing its operational status."""
     get_incident_or_404(db, incident_id)
@@ -1738,6 +2471,15 @@ def archive_incident(
             "Incident archived for dashboard/list organization.",
             {"reason": archive_state.reason} if archive_state.reason else None,
         )
+        log_admin_audit_event(
+            db,
+            "incident_archived",
+            request=request,
+            actor=admin["user"],
+            target_type="incident",
+            target_id=incident_id,
+            details={"reason": archive_state.reason},
+        )
         db.commit()
         db.refresh(archive_state)
     return {"incident_id": incident_id, "is_archived": True, "archive_state": serialize_archive_state(archive_state)}
@@ -1746,8 +2488,9 @@ def archive_incident(
 @app.post("/incidents/{incident_id}/unarchive")
 def unarchive_incident(
     incident_id: str,
+    request: Request,
     db: Session = Depends(get_db),
-    admin: dict = Depends(get_current_admin),
+    admin: dict = Depends(require_permission("archive_incidents")),
 ):
     """Remove archive state without changing incident operational status."""
     get_incident_or_404(db, incident_id)
@@ -1762,6 +2505,14 @@ def unarchive_incident(
             "incident_unarchived",
             "Incident restored to active views.",
         )
+        log_admin_audit_event(
+            db,
+            "incident_unarchived",
+            request=request,
+            actor=admin["user"],
+            target_type="incident",
+            target_id=incident_id,
+        )
         db.commit()
     return {"incident_id": incident_id, "is_archived": False}
 
@@ -1770,7 +2521,7 @@ def unarchive_incident(
 def get_incident_playbook(
     incident_id: str,
     db: Session = Depends(get_db),
-    admin: dict = Depends(get_current_admin),
+    admin: dict = Depends(require_permission("view_incidents")),
 ):
     """Return an existing manual playbook or a suggested template without creating rows."""
     incident = get_incident_or_404(db, incident_id)
@@ -1784,12 +2535,24 @@ def get_incident_playbook(
 @app.post("/incidents/{incident_id}/playbook")
 def create_incident_playbook(
     incident_id: str,
+    request: Request,
     db: Session = Depends(get_db),
-    admin: dict = Depends(get_current_admin),
+    admin: dict = Depends(require_permission("manage_playbooks")),
 ):
     """Create the deterministic manual response playbook when an analyst explicitly requests it."""
     incident = get_incident_or_404(db, incident_id)
     playbook, steps, created = get_or_create_playbook(db, incident, current_admin_username(admin))
+    if created:
+        log_admin_audit_event(
+            db,
+            "playbook_created",
+            request=request,
+            actor=admin["user"],
+            target_type="incident",
+            target_id=incident_id,
+            details={"playbook_id": playbook.id, "template_key": playbook.template_key},
+        )
+        db.commit()
     return {"playbook": serialize_playbook(playbook, steps), "created": created}
 
 
@@ -1797,8 +2560,9 @@ def create_incident_playbook(
 def update_playbook_step(
     step_id: int,
     payload: PlaybookStepUpdate,
+    request: Request,
     db: Session = Depends(get_db),
-    admin: dict = Depends(get_current_admin),
+    admin: dict = Depends(require_permission("manage_playbooks")),
 ):
     """Update a manual playbook checklist step status."""
     accepted_statuses = {"todo", "in_progress", "done", "skipped"}
@@ -1840,6 +2604,20 @@ def update_playbook_step(
             "status": payload.status,
         },
     )
+    log_admin_audit_event(
+        db,
+        "playbook_step_updated",
+        request=request,
+        actor=admin["user"],
+        target_type="incident",
+        target_id=playbook.incident_id,
+        details={
+            "step_id": step.id,
+            "playbook_id": playbook.id,
+            "previous_status": previous_status,
+            "status": payload.status,
+        },
+    )
     db.commit()
     db.refresh(step)
     return {
@@ -1861,8 +2639,9 @@ def update_playbook_step(
 def add_incident_note(
     incident_id: str,
     payload: NoteCreate,
+    request: Request,
     db: Session = Depends(get_db),
-    admin: dict = Depends(get_current_admin),
+    admin: dict = Depends(require_permission("add_notes")),
 ):
     """Add an analyst note to an incident."""
     get_incident_or_404(db, incident_id)
@@ -1882,6 +2661,15 @@ def add_incident_note(
         "Analyst note added.",
         {"note_id": note.id},
     )
+    log_admin_audit_event(
+        db,
+        "note_added",
+        request=request,
+        actor=admin["user"],
+        target_type="incident",
+        target_id=incident_id,
+        details={"note_id": note.id},
+    )
     db.commit()
     db.refresh(note)
     return serialize_note(note)
@@ -1891,7 +2679,7 @@ def add_incident_note(
 def list_incident_notes(
     incident_id: str,
     db: Session = Depends(get_db),
-    admin: dict = Depends(get_current_admin),
+    admin: dict = Depends(require_permission("view_incidents")),
 ):
     """Return analyst notes oldest first for stable chronological reading."""
     get_incident_or_404(db, incident_id)
@@ -1908,7 +2696,7 @@ def list_incident_notes(
 def list_incident_actions(
     incident_id: str,
     db: Session = Depends(get_db),
-    admin: dict = Depends(get_current_admin),
+    admin: dict = Depends(require_permission("view_incidents")),
 ):
     """Return historical action events oldest first."""
     get_incident_or_404(db, incident_id)
@@ -1925,7 +2713,7 @@ def list_incident_actions(
 def get_incident_timeline(
     incident_id: str,
     db: Session = Depends(get_db),
-    admin: dict = Depends(get_current_admin),
+    admin: dict = Depends(require_permission("view_incidents")),
 ):
     """Return chronological timeline events, using action events first.
 
@@ -2035,8 +2823,9 @@ def get_incident_timeline(
 @app.post("/incidents/{incident_id}/approve")
 def approve_incident(
     incident_id: str,
+    request: Request,
     db: Session = Depends(get_db),
-    admin: dict = Depends(get_current_admin),
+    admin: dict = Depends(require_permission("approve_incidents")),
 ):
     """Approve the recommended action."""
     incident = db.query(Incident).filter(Incident.id == incident_id).first()
@@ -2051,6 +2840,15 @@ def approve_incident(
         "Incident approved by analyst.",
         {"action": incident.recommended_action},
     )
+    log_admin_audit_event(
+        db,
+        "incident_approved",
+        request=request,
+        actor=admin["user"],
+        target_type="incident",
+        target_id=incident_id,
+        details={"action": incident.recommended_action},
+    )
     db.commit()
     logger.info(f"Incident {incident_id} APPROVED by human analyst")
     return {"incident_id": incident_id, "status": "approved", "action": incident.recommended_action}
@@ -2059,8 +2857,9 @@ def approve_incident(
 @app.post("/incidents/{incident_id}/reject")
 def reject_incident(
     incident_id: str,
+    request: Request,
     db: Session = Depends(get_db),
-    admin: dict = Depends(get_current_admin),
+    admin: dict = Depends(require_permission("reject_incidents")),
 ):
     """Reject the incident and close it as a false positive."""
     incident = db.query(Incident).filter(Incident.id == incident_id).first()
@@ -2073,6 +2872,14 @@ def reject_incident(
         current_admin_username(admin),
         "incident_rejected",
         "Incident rejected by analyst and closed as false positive.",
+    )
+    log_admin_audit_event(
+        db,
+        "incident_rejected",
+        request=request,
+        actor=admin["user"],
+        target_type="incident",
+        target_id=incident_id,
     )
     db.commit()
     logger.info(f"Incident {incident_id} REJECTED by human analyst - closed as false positive")
@@ -2088,7 +2895,11 @@ def serve_dashboard():
 
 
 @app.get("/report")
-def generate_report(db: Session = Depends(get_db), admin: dict = Depends(get_current_admin)):
+def generate_report(
+    request: Request,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(require_permission("generate_report")),
+):
     """Generate an executive AI report from stored incidents."""
     from config import GEMINI_API_KEY
     from langchain_google_genai import ChatGoogleGenerativeAI
@@ -2096,6 +2907,16 @@ def generate_report(db: Session = Depends(get_db), admin: dict = Depends(get_cur
     incidents = db.query(Incident).order_by(Incident.created_at.desc()).limit(50).all()
 
     if not incidents:
+        log_admin_audit_event(
+            db,
+            "report_generated",
+            request=request,
+            actor=admin["user"],
+            target_type="report",
+            success=True,
+            details={"incidents_analyzed": 0},
+        )
+        db.commit()
         return {"report": "No incidents found."}
 
     summary = "\n".join(
@@ -2132,6 +2953,16 @@ Be concise and professional."""
     if isinstance(content, list):
         content = "".join([c.get("text", "") if isinstance(c, dict) else str(c) for c in content])
 
+    log_admin_audit_event(
+        db,
+        "report_generated",
+        request=request,
+        actor=admin["user"],
+        target_type="report",
+        success=True,
+        details={"incidents_analyzed": len(incidents)},
+    )
+    db.commit()
     return {"report": content, "incidents_analyzed": len(incidents)}
 
 

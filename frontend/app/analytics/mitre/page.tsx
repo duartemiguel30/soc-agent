@@ -30,7 +30,6 @@ export default function MitreAnalyticsPage() {
 
   const totalEvents = useMemo(() => totalAlertEvents(incidents), [incidents]);
   const rows = useMemo(() => mitreDistribution(incidents).filter((item) => item.value > 0), [incidents]);
-  const max = Math.max(...rows.map((item) => item.value), 1);
 
   return (
     <AuthGuard>
@@ -66,7 +65,12 @@ export default function MitreAnalyticsPage() {
                         </span>
                         <span className="analytics-row-percent">{percentage.toFixed(1)}%</span>
                         <span className="horizontal-track">
-                          <span className="horizontal-fill" style={{ width: `${Math.max(4, (item.value / max) * 100)}%` }} />
+                          {percentage > 0 ? (
+                            <span
+                              className="horizontal-fill"
+                              style={{ minWidth: "3px", width: `${Math.min(100, percentage)}%` }}
+                            />
+                          ) : null}
                         </span>
                       </Link>
                     );

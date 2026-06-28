@@ -59,6 +59,14 @@ function envNumber(name, fallback) {
   return Number.isFinite(value) && value > 0 ? value : Number(fallback);
 }
 
+function envBoolean(name, fallback) {
+  const value = process.env[name];
+  if (value === undefined || value === "") {
+    return fallback;
+  }
+  return value.trim().toLowerCase() === "true";
+}
+
 loadDemoEnvFile();
 
 function clamp(value, min, max) {
@@ -71,7 +79,7 @@ function demoSpeedMultiplier() {
     return numericMultiplier;
   }
 
-  const speed = (process.env.DEMO_SPEED || "normal").toLowerCase();
+  const speed = (process.env.DEMO_SPEED || "fast").toLowerCase();
   if (speed === "slow") {
     return 1.25;
   }
@@ -87,28 +95,50 @@ const baseUrl =
   "http://192.168.56.105:3000";
 const username = process.env.DEMO_ADMIN_USERNAME || "admin";
 const password = process.env.DEMO_ADMIN_PASSWORD || "admin";
-const headless = process.env.DEMO_HEADLESS ? process.env.DEMO_HEADLESS !== "false" : false;
+const externalRecordingMode = envBoolean("DEMO_EXTERNAL_RECORDING_MODE", false);
+const recordVideo = process.env.DEMO_RECORD_VIDEO === undefined || process.env.DEMO_RECORD_VIDEO === ""
+  ? !externalRecordingMode
+  : envBoolean("DEMO_RECORD_VIDEO", true);
+const fullscreen = envBoolean("DEMO_FULLSCREEN", false);
+const headless = externalRecordingMode ? false : process.env.DEMO_HEADLESS ? process.env.DEMO_HEADLESS !== "false" : false;
 const speedMultiplier = demoSpeedMultiplier();
-const slowMo = envNumber("DEMO_SLOW_MO_MS", "120");
+const slowMo = Math.round(envNumber("DEMO_SLOW_MO_MS", "120") * speedMultiplier);
 const videoWidth = envNumber("DEMO_VIDEO_WIDTH", "1920");
 const videoHeight = envNumber("DEMO_VIDEO_HEIGHT", "1080");
+const startDelayMs = envNumber("DEMO_START_DELAY_MS", "5000");
 const generateReportInDemo = process.env.DEMO_GENERATE_REPORT !== "false";
 const reportTimeoutMs = envNumber("DEMO_REPORT_TIMEOUT_MS", "90000");
+const demoStartTheme = process.env.DEMO_START_THEME || "light";
+const switchToDarkAfterLogin = envBoolean("DEMO_SWITCH_TO_DARK_AFTER_LOGIN", true);
+const finalCaption = process.env.DEMO_FINAL_CAPTION || "Hope you enjoyed the presentation";
+const finalCaptionMs = envNumber("DEMO_FINAL_CAPTION_MS", "2600");
 const timing = {
-  captionMin: envNumber("DEMO_CAPTION_MIN_MS", "1400"),
-  captionMax: envNumber("DEMO_CAPTION_MAX_MS", "3200"),
-  captionPerChar: envNumber("DEMO_CAPTION_PER_CHAR_MS", "32"),
-  pageMin: envNumber("DEMO_PAGE_MIN_MS", "1200"),
-  pageMax: envNumber("DEMO_PAGE_MAX_MS", "2600"),
-  clickPause: envNumber("DEMO_CLICK_PAUSE_MS", "650"),
-  hoverPause: envNumber("DEMO_HOVER_PAUSE_MS", "420"),
-  filterPause: envNumber("DEMO_FILTER_PAUSE_MS", "900"),
-  rangePause: envNumber("DEMO_RANGE_PAUSE_MS", "850"),
-  sectionPause: envNumber("DEMO_SECTION_PAUSE_MS", "1200"),
-  scrollMin: envNumber("DEMO_SCROLL_MIN_MS", "650"),
-  scrollMax: envNumber("DEMO_SCROLL_MAX_MS", "1600"),
+  captionMin: envNumber("DEMO_CAPTION_MIN_MS", "850"),
+  captionMax: envNumber("DEMO_CAPTION_MAX_MS", "2100"),
+  captionPerChar: envNumber("DEMO_CAPTION_PER_CHAR_MS", "20"),
+  captionIntro: envNumber("DEMO_CAPTION_INTRO_MS", "250"),
+  stepSettle: envNumber("DEMO_STEP_SETTLE_MS", "550"),
+  importantStepSettle: envNumber("DEMO_IMPORTANT_STEP_SETTLE_MS", "900"),
+  pageMin: envNumber("DEMO_PAGE_MIN_MS", "700"),
+  pageMax: envNumber("DEMO_PAGE_MAX_MS", "1500"),
+  clickPause: envNumber("DEMO_CLICK_PAUSE_MS", "380"),
+  hoverPause: envNumber("DEMO_HOVER_PAUSE_MS", "220"),
+  filterPause: envNumber("DEMO_FILTER_PAUSE_MS", "500"),
+  rangePause: envNumber("DEMO_RANGE_PAUSE_MS", "520"),
+  sectionPause: envNumber("DEMO_SECTION_PAUSE_MS", "700"),
+  scrollMin: envNumber("DEMO_SCROLL_MIN_MS", "380"),
+  scrollMax: envNumber("DEMO_SCROLL_MAX_MS", "1000"),
 };
 const toggleTheme = process.env.DEMO_TOGGLE_THEME === "true";
+let keepDarkTheme = false;
+let startDelayCompleted = false;
+
+function launchArgs() {
+  if (!fullscreen && !externalRecordingMode) {
+    return [];
+  }
+  return ["--start-fullscreen", `--window-size=${videoWidth},${videoHeight}`];
+}
 
 async function loadPlaywright() {
   try {
@@ -126,6 +156,72 @@ async function loadPlaywright() {
 
 function urlFor(pathname) {
   return new URL(pathname, baseUrl).toString();
+}
+
+async function setInitialTheme(context, theme) {
+  const normalizedTheme = theme === "dark" ? "dark" : "light";
+  await context.addInitScript((nextTheme) => {
+    try {
+      const storedTheme = localStorage.getItem("soc_theme");
+      const themeToApply = storedTheme === "dark" || storedTheme === "light" ? storedTheme : nextTheme;
+      localStorage.setItem("soc_theme", themeToApply);
+      document.documentElement.dataset.theme = themeToApply;
+      document.documentElement.style.colorScheme = themeToApply;
+      document.documentElement.classList.toggle("dark", themeToApply === "dark");
+      let style = document.getElementById("soc-demo-theme-prepaint");
+      if (!style) {
+        style = document.createElement("style");
+        style.id = "soc-demo-theme-prepaint";
+        document.documentElement.appendChild(style);
+      }
+      style.textContent =
+        themeToApply === "dark"
+          ? "html, body { background: #020617 !important; color-scheme: dark; }"
+          : "html, body { background: #f3f6fa !important; color-scheme: light; }";
+    } catch {}
+  }, normalizedTheme);
+}
+
+async function forceTheme(page, theme) {
+  const normalizedTheme = theme === "dark" ? "dark" : "light";
+  await page.evaluate((nextTheme) => {
+    localStorage.setItem("soc_theme", nextTheme);
+    document.documentElement.dataset.theme = nextTheme;
+    document.documentElement.style.colorScheme = nextTheme;
+    document.documentElement.classList.toggle("dark", nextTheme === "dark");
+    let style = document.getElementById("soc-demo-theme-prepaint");
+    if (!style) {
+      style = document.createElement("style");
+      style.id = "soc-demo-theme-prepaint";
+      document.documentElement.appendChild(style);
+    }
+    style.textContent =
+      nextTheme === "dark"
+        ? "html, body { background: #020617 !important; color-scheme: dark; }"
+        : "html, body { background: #f3f6fa !important; color-scheme: light; }";
+  }, normalizedTheme);
+}
+
+async function ensureTheme(page, theme, options = {}) {
+  const normalizedTheme = theme === "dark" ? "dark" : "light";
+  const currentTheme = await page.evaluate(() => document.documentElement.dataset.theme || "light").catch(() => "light");
+  if (currentTheme === normalizedTheme) {
+    return;
+  }
+  if (options.visible) {
+    const label = normalizedTheme === "dark" ? /switch to dark mode/i : /switch to light mode/i;
+    const toggled = await clickWithDemoCursor(page, page.getByRole("button", { name: label }).first(), options.caption, { actionKind: "important" });
+    if (toggled) {
+      await page.waitForFunction((nextTheme) => document.documentElement.dataset.theme === nextTheme, normalizedTheme, { timeout: 4000 });
+      return;
+    }
+  }
+  await forceTheme(page, normalizedTheme);
+  await page.waitForFunction((nextTheme) => document.documentElement.dataset.theme === nextTheme, normalizedTheme, { timeout: 4000 });
+}
+
+async function ensureDarkTheme(page) {
+  await ensureTheme(page, "dark");
 }
 
 async function pause(page, ms = actionPause("normal")) {
@@ -154,12 +250,32 @@ function actionPause(kind) {
     low: 700,
     normal: timing.sectionPause,
     high: 1800,
+    important: timing.importantStepSettle,
   };
   return scaledTiming(values[kind] ?? values.normal);
 }
 
 async function pauseForCaption(page, text, options = {}) {
   await pause(page, captionDuration(text, options));
+}
+
+async function pauseForCaptionIntro(page) {
+  await pause(page, scaledTiming(timing.captionIntro));
+}
+
+async function pauseForActionSettle(page, importance = "normal") {
+  const duration = importance === "important" || importance === "high" ? timing.importantStepSettle : timing.stepSettle;
+  await pause(page, scaledTiming(duration));
+}
+
+async function runDemoStep(page, caption, action, options = {}) {
+  if (caption) {
+    await showCaption(page, caption, { wait: false });
+    await pauseForCaptionIntro(page);
+  }
+  const result = await action();
+  await pauseForActionSettle(page, options.importance || options.actionKind || "normal");
+  return result;
 }
 
 async function pauseForAction(page, kind) {
@@ -171,7 +287,7 @@ async function waitForPage(page) {
   await page.waitForTimeout(350);
 }
 
-async function showCaption(page, text) {
+async function showCaption(page, text, options = {}) {
   await page.evaluate((captionText) => {
     const id = "soc-demo-caption";
     let caption = document.getElementById(id);
@@ -181,18 +297,18 @@ async function showCaption(page, text) {
       style.textContent = `
         #${id} {
           position: fixed;
-          left: 28px;
+          right: 28px;
           bottom: 28px;
           z-index: 2147483647;
-          max-width: min(520px, calc(100vw - 56px));
-          border: 1px solid rgba(148, 163, 184, 0.45);
-          border-radius: 8px;
-          background: rgba(15, 23, 42, 0.88);
+          max-width: min(680px, calc(100vw - 56px));
+          border: 1px solid rgba(148, 163, 184, 0.55);
+          border-radius: calc(12px * var(--soc-demo-caption-scale, 1));
+          background: rgba(15, 23, 42, 0.92);
           color: #f8fafc;
-          box-shadow: 0 18px 42px rgba(15, 23, 42, 0.28);
-          font: 700 16px/1.35 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          box-shadow: 0 20px 48px rgba(15, 23, 42, 0.35);
+          font: 700 calc(18px * var(--soc-demo-caption-scale, 1))/1.35 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
           letter-spacing: 0;
-          padding: 12px 14px;
+          padding: calc(16px * var(--soc-demo-caption-scale, 1)) calc(18px * var(--soc-demo-caption-scale, 1));
           pointer-events: none;
           opacity: 0;
           transform: translateY(8px);
@@ -208,10 +324,14 @@ async function showCaption(page, text) {
       caption.id = id;
       document.body.appendChild(caption);
     }
+    const scale = Math.max(1, Math.min(1.35, window.innerWidth / 1920));
+    caption.style.setProperty("--soc-demo-caption-scale", String(scale));
     caption.textContent = captionText;
     requestAnimationFrame(() => caption.classList.add("visible"));
   }, text);
-  await pauseForCaption(page, text);
+  if (options.wait !== false) {
+    await pauseForCaption(page, text, options);
+  }
 }
 
 async function ensureDemoCursor(page) {
@@ -286,7 +406,7 @@ async function ensureDemoCursor(page) {
 async function glideCursorTo(page, x, y, options = {}) {
   await ensureDemoCursor(page);
   await page.evaluate(
-    ({ nextX, nextY, minDuration, maxDuration, durationOverride }) =>
+    ({ nextX, nextY, minDuration, maxDuration, durationOverride, durationMultiplier }) =>
       new Promise((resolve) => {
       const cursor = document.getElementById("soc-demo-cursor");
       if (!cursor) {
@@ -297,7 +417,7 @@ async function glideCursorTo(page, x, y, options = {}) {
         const currentX = Number(cursor.dataset.x || cursor.style.left.replace("px", "") || 48);
         const currentY = Number(cursor.dataset.y || cursor.style.top.replace("px", "") || 48);
         const distance = Math.hypot(nextX - currentX, nextY - currentY);
-        const duration = durationOverride || Math.min(maxDuration, Math.max(minDuration, distance * 1.2));
+        const duration = durationOverride || Math.min(maxDuration, Math.max(minDuration, distance * 1.2 * durationMultiplier));
         const start = performance.now();
         const easeOutCubic = (value) => 1 - Math.pow(1 - value, 3);
 
@@ -329,6 +449,7 @@ async function glideCursorTo(page, x, y, options = {}) {
       minDuration: scaledTiming(options.minDuration ?? 320),
       maxDuration: scaledTiming(options.maxDuration ?? 900),
       durationOverride: options.duration ? scaledTiming(options.duration) : null,
+      durationMultiplier: speedMultiplier,
     },
   );
   await page.mouse.move(x, y).catch(() => undefined);
@@ -373,7 +494,7 @@ async function currentScrollY(page) {
 
 async function smoothScrollToY(page, targetY, options = {}) {
   await page.evaluate(
-    ({ nextY, minDuration, maxDuration, durationOverride }) =>
+    ({ nextY, minDuration, maxDuration, durationOverride, durationMultiplier }) =>
       new Promise((resolve) => {
         const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
         const startY = window.scrollY || document.documentElement.scrollTop || 0;
@@ -384,7 +505,7 @@ async function smoothScrollToY(page, targetY, options = {}) {
           return;
         }
 
-        const duration = durationOverride || Math.min(maxDuration, Math.max(minDuration, Math.abs(distance) * 0.45));
+        const duration = durationOverride || Math.min(maxDuration, Math.max(minDuration, Math.abs(distance) * 0.45 * durationMultiplier));
         const start = performance.now();
         const easeOutCubic = (value) => 1 - Math.pow(1 - value, 3);
 
@@ -406,6 +527,7 @@ async function smoothScrollToY(page, targetY, options = {}) {
       minDuration: scaledTiming(options.minDuration ?? timing.scrollMin),
       maxDuration: scaledTiming(options.maxDuration ?? timing.scrollMax),
       durationOverride: options.duration ? scaledTiming(options.duration) : null,
+      durationMultiplier: speedMultiplier,
     },
   );
 }
@@ -460,10 +582,11 @@ async function smoothScrollToText(page, text, caption, options = {}) {
       return false;
     }
     if (caption) {
-      await showCaption(page, caption);
+      await runDemoStep(page, caption, () => smoothScrollToLocator(page, locator), { importance: options.importance || "normal" });
+    } else {
+      await smoothScrollToLocator(page, locator);
+      await pauseForAction(page, options.importance || "section");
     }
-    await smoothScrollToLocator(page, locator);
-    await pauseForAction(page, options.importance || "section");
     return true;
   } catch {
     return false;
@@ -477,17 +600,21 @@ async function clickWithDemoCursor(page, locator, caption, options = {}) {
     if (!(await target.count())) {
       return false;
     }
+    const clickAction = async () => {
+      await smoothScrollToLocator(page, target, { desiredY: Math.round((page.viewportSize()?.height || videoHeight) * 0.38) });
+      await moveCursorToLocator(page, target);
+      await pauseForAction(page, "hover");
+      await setDemoCursorClicking(page, true);
+      await target.click({ timeout });
+      await pause(page, scaledTiming(150));
+      await setDemoCursorClicking(page, false);
+    };
     if (caption) {
-      await showCaption(page, caption);
+      await runDemoStep(page, caption, clickAction, { importance: options.actionKind || "normal" });
+    } else {
+      await clickAction();
+      await pauseForAction(page, options.actionKind || "click");
     }
-    await smoothScrollToLocator(page, target, { desiredY: Math.round((page.viewportSize()?.height || videoHeight) * 0.38) });
-    await moveCursorToLocator(page, target);
-    await pauseForAction(page, "hover");
-    await setDemoCursorClicking(page, true);
-    await target.click({ timeout });
-    await pause(page, scaledTiming(150));
-    await setDemoCursorClicking(page, false);
-    await pauseForAction(page, options.actionKind || "click");
     return true;
   } catch {
     await setDemoCursorClicking(page, false).catch(() => undefined);
@@ -495,27 +622,106 @@ async function clickWithDemoCursor(page, locator, caption, options = {}) {
   }
 }
 
+async function fillWithDemoCursor(page, locator, value, caption, options = {}) {
+  const target = locator.first();
+  const fillAction = async () => {
+    await smoothScrollToLocator(page, target, { desiredY: Math.round((page.viewportSize()?.height || videoHeight) * 0.42) });
+    await moveCursorToLocator(page, target);
+    await pauseForAction(page, "hover");
+    await setDemoCursorClicking(page, true);
+    await target.click({ timeout: options.timeout || 2200 });
+    await pause(page, scaledTiming(120));
+    await setDemoCursorClicking(page, false);
+    await target.fill(value);
+  };
+  if (caption) {
+    await runDemoStep(page, caption, fillAction, { importance: options.importance || "normal" });
+  } else {
+    await fillAction();
+    await pauseForAction(page, options.actionKind || "click");
+  }
+}
+
+async function selectWithDemoCursor(page, locator, value, caption, options = {}) {
+  const target = locator.first();
+  const selectAction = async () => {
+    await smoothScrollToLocator(page, target, { desiredY: Math.round((page.viewportSize()?.height || videoHeight) * 0.45) });
+    await moveCursorToLocator(page, target);
+    await pauseForAction(page, "hover");
+    await setDemoCursorClicking(page, true);
+    await target.click({ timeout: options.timeout || 2200 });
+    await pause(page, scaledTiming(120));
+    await setDemoCursorClicking(page, false);
+    await target.selectOption(value, { timeout: options.timeout || 1800 });
+  };
+  if (caption) {
+    await runDemoStep(page, caption, selectAction, { importance: options.importance || "normal" });
+  } else {
+    await selectAction();
+    await pauseForAction(page, options.actionKind || "filter");
+  }
+}
+
 async function safeSelect(page, label, value) {
   try {
     const field = page.getByLabel(label).first();
-    await smoothScrollToLocator(page, field, { desiredY: Math.round((page.viewportSize()?.height || videoHeight) * 0.45) });
-    await moveCursorToLocator(page, field);
-    await pauseForAction(page, "hover");
-    await field.selectOption(value, { timeout: 1800 });
-    await pauseForAction(page, "filter");
+    await selectWithDemoCursor(page, field, value);
     return true;
   } catch {
     return false;
   }
 }
 
-async function safeSelectAny(page, label, values) {
-  for (const value of values) {
-    if (await safeSelect(page, label, value)) {
-      return value;
-    }
+async function pointAtControl(page, locator) {
+  const target = locator.first();
+  if (!(await target.count().catch(() => 0))) {
+    return false;
   }
-  return null;
+  if (!(await target.isVisible().catch(() => false))) {
+    return false;
+  }
+  await smoothScrollToLocator(page, target, { desiredY: Math.round((page.viewportSize()?.height || videoHeight) * 0.38) });
+  await moveCursorToLocator(page, target);
+  await pauseForAction(page, "hover");
+  return true;
+}
+
+async function pointAtIncidentFilters(page, caption) {
+  await runDemoStep(page, caption, async () => {
+    await smoothScrollToY(page, 0);
+    await pointAtControl(page, page.getByRole("heading", { name: /^Incidents$/i }));
+    const filterPanel = page.locator(".filter-panel").first();
+    if (await filterPanel.count().catch(() => 0)) {
+      await smoothScrollToLocator(page, filterPanel, { desiredY: Math.round((page.viewportSize()?.height || videoHeight) * 0.35) });
+    }
+    const controls = [
+      page.getByLabel("Archive scope"),
+      page.getByLabel("Status"),
+      page.getByLabel("Severity"),
+      page.getByLabel("Search incidents"),
+      page.getByLabel("Date scope"),
+    ];
+    for (const control of controls) {
+      await pointAtControl(page, control);
+    }
+  }, { importance: "important" });
+}
+
+async function applyArchiveScopeAll(page) {
+  const selected = await safeSelect(page, "Archive scope", "all");
+  if (selected) {
+    await pauseForAction(page, "filter");
+  }
+  return selected;
+}
+
+async function clearIncidentFilters(page, caption) {
+  const cleared = await clickWithDemoCursor(page, page.getByRole("button", { name: /clear filters/i }), caption, { actionKind: "filter" });
+  if (cleared) {
+    await waitForPage(page);
+    await pauseForAction(page, "filter");
+  }
+  return cleared;
 }
 
 async function safeGotoOrContinue(page, pathname, caption) {
@@ -565,12 +771,113 @@ async function waitForReportResult(page, initialText) {
 async function goto(page, pathname, caption) {
   await page.goto(urlFor(pathname), { waitUntil: "domcontentloaded" });
   await waitForPage(page);
+  if (keepDarkTheme) {
+    await ensureDarkTheme(page);
+  }
   await ensureDemoCursor(page);
   await moveDemoCursor(page, Math.round(videoWidth * 0.16), Math.round(videoHeight * 0.18));
   if (caption) {
-    await showCaption(page, caption);
+    await showCaption(page, caption, { wait: false });
+    await pauseForCaptionIntro(page);
+    await pauseForActionSettle(page, "normal");
   }
   await pauseForAction(page, "page");
+}
+
+async function waitForExternalRecordingStart(page) {
+  const startDelayConfigured = process.env.DEMO_START_DELAY_MS !== undefined && process.env.DEMO_START_DELAY_MS !== "";
+  if (startDelayCompleted || (!externalRecordingMode && !startDelayConfigured) || startDelayMs <= 0) {
+    return;
+  }
+  startDelayCompleted = true;
+  const seconds = Math.ceil(startDelayMs / 1000);
+  if (externalRecordingMode) {
+    console.log(`External recording mode: starting in ${seconds} seconds...`);
+  } else {
+    console.log(`Demo start delay: starting in ${seconds} seconds...`);
+  }
+  await page.waitForTimeout(startDelayMs);
+  await showCaption(
+    page,
+    externalRecordingMode ? "External recording mode: starting presentation" : "Starting presentation",
+    { wait: false },
+  );
+  await pauseForCaptionIntro(page);
+  await pauseForActionSettle(page, "normal");
+}
+
+async function waitForRoute(page, pathname) {
+  if (!pathname) {
+    await waitForPage(page);
+    return;
+  }
+  await page
+    .waitForFunction((nextPath) => window.location.pathname === nextPath, pathname, { timeout: 8000 })
+    .catch(() => undefined);
+  await waitForPage(page);
+}
+
+async function visibleNavLink(page, labelOrRegex) {
+  const candidates = Array.isArray(labelOrRegex) ? labelOrRegex : [labelOrRegex];
+  for (const name of candidates) {
+    const links = page.getByRole("link", { name });
+    const count = await links.count().catch(() => 0);
+    for (let index = 0; index < count; index += 1) {
+      const link = links.nth(index);
+      if (await link.isVisible().catch(() => false)) {
+        return link;
+      }
+    }
+  }
+  return null;
+}
+
+async function visiblePageLinkByHref(page, href) {
+  const links = page.locator(`a[href="${href}"]`);
+  const count = await links.count().catch(() => 0);
+  for (let index = 0; index < count; index += 1) {
+    const link = links.nth(index);
+    if (await link.isVisible().catch(() => false)) {
+      return link;
+    }
+  }
+  return null;
+}
+
+async function navigateByVisibleNav(page, labelOrRegex, fallbackPath, caption, options = {}) {
+  const link = await visibleNavLink(page, labelOrRegex);
+  if (link) {
+    await clickWithDemoCursor(page, link, caption, { actionKind: options.importance || "important" });
+    await waitForRoute(page, fallbackPath);
+    if (keepDarkTheme) {
+      await ensureDarkTheme(page);
+    }
+    return true;
+  }
+
+  let pageLink = await visiblePageLinkByHref(page, fallbackPath);
+  if (!pageLink && fallbackPath.startsWith("/analytics/")) {
+    const dashboardLink = await visibleNavLink(page, /Dashboard/i);
+    const currentPath = await page.evaluate(() => window.location.pathname).catch(() => "");
+    if (dashboardLink && currentPath !== "/dashboard") {
+      await clickWithDemoCursor(page, dashboardLink, "Opening Dashboard to use the visible analytics shortcut.", { actionKind: "important" });
+      await waitForRoute(page, "/dashboard");
+    }
+    pageLink = await visiblePageLinkByHref(page, fallbackPath);
+  }
+  if (pageLink) {
+    console.log(`[INFO] Header nav link not found for ${fallbackPath}; using a visible page link instead.`);
+    await clickWithDemoCursor(page, pageLink, caption, { actionKind: options.importance || "important" });
+    await waitForRoute(page, fallbackPath);
+    if (keepDarkTheme) {
+      await ensureDarkTheme(page);
+    }
+    return true;
+  }
+
+  console.warn(`[WARN] Visible nav link not found for ${fallbackPath}; falling back to direct navigation.`);
+  await goto(page, fallbackPath, caption);
+  return false;
 }
 
 async function clickBackToTimeline(page) {
@@ -586,7 +893,7 @@ async function clickBackToTimeline(page) {
     await waitForPage(page);
     return true;
   }
-  await safeGotoOrContinue(page, "/analytics/alerts", "Full alert timeline");
+  await navigateByVisibleNav(page, /Alert Timeline/i, "/analytics/alerts", "Full alert timeline");
   return false;
 }
 
@@ -634,55 +941,69 @@ async function clickFirstPositiveTimelineBucket(page) {
 }
 
 async function login(page) {
-  await goto(page, "/login", "SOC AI Agent Demo");
-  await clickWithDemoCursor(page, page.getByLabel("Username"), "Signing in to the admin console");
-  await page.getByLabel("Username").fill(username);
-  await moveCursorToLocator(page, page.getByLabel("Password"));
-  await page.getByLabel("Password").fill(password);
+  await goto(page, "/login", externalRecordingMode ? undefined : "SOC AI Agent Demo");
+  await waitForExternalRecordingStart(page);
+  await fillWithDemoCursor(page, page.getByLabel("Username"), username, "Signing in to the admin console");
+  await fillWithDemoCursor(page, page.getByLabel("Password"), password);
   await clickWithDemoCursor(page, page.getByRole("button", { name: /sign in/i }));
   await page.waitForURL(/\/dashboard/, { timeout: 15000 });
   await waitForPage(page);
   await ensureDemoCursor(page);
 }
 
+async function switchDemoToDarkMode(page) {
+  if (!switchToDarkAfterLogin) {
+    return;
+  }
+
+  await ensureTheme(page, "dark", {
+    visible: true,
+    caption: "Switching to dark mode for the SOC analyst workflow",
+  });
+  keepDarkTheme = true;
+}
+
 async function demonstrateDashboard(page) {
-  await showCaption(page, "Dashboard metrics: incidents vs alert events");
-  await smoothScrollBy(page, 320);
-  await pauseForAction(page, "low");
-  await showCaption(page, "Alert/Event Evolution: correlated events over time");
-  await clickWithDemoCursor(page, page.getByRole("button", { name: "24h" }), undefined, { actionKind: "range" });
-  await clickWithDemoCursor(page, page.getByRole("button", { name: "7d" }), undefined, { actionKind: "range" });
-  await clickWithDemoCursor(page, page.getByRole("button", { name: "1m" }), undefined, { actionKind: "range" });
-  await clickWithDemoCursor(page, page.getByRole("button", { name: "1y" }), undefined, { actionKind: "range" });
+  await runDemoStep(page, "Dashboard metrics: incidents vs alert events", async () => {
+    await smoothScrollBy(page, 320);
+  });
+  await runDemoStep(page, "Alert/Event Evolution: correlated events over time", async () => {
+    await clickWithDemoCursor(page, page.getByRole("button", { name: "24h" }), undefined, { actionKind: "range" });
+    await clickWithDemoCursor(page, page.getByRole("button", { name: "7d" }), undefined, { actionKind: "range" });
+    await clickWithDemoCursor(page, page.getByRole("button", { name: "1m" }), undefined, { actionKind: "range" });
+    await clickWithDemoCursor(page, page.getByRole("button", { name: "1y" }), undefined, { actionKind: "range" });
+  }, { importance: "important" });
   await safeScrollToText(page, "MITRE ATT&CK Distribution", "MITRE ATT&CK: event-weighted techniques", { importance: "high" });
   await safeScrollToText(page, "Severity Distribution", "Severity and decision distributions");
   await safeScrollToText(page, "Decision Distribution", "Severity and decision distributions");
   await safeScrollToText(page, "Top Agents", "Top agents by alert-event volume");
   await safeScrollToText(page, "Stored Severity Summary", "Stored incident summaries and active decision metrics");
   await safeScrollToText(page, "Active Decision Metrics", "Stored incident summaries and active decision metrics");
-  await safeGotoOrContinue(page, "/dashboard", "Dashboard metrics: incidents vs alert events");
+  await navigateByVisibleNav(page, /Dashboard/i, "/dashboard", "Dashboard metrics: incidents vs alert events");
 }
 
 async function demonstrateAlertTimeline(page) {
-  if (!(await safeGotoOrContinue(page, "/analytics/alerts", "Full alert timeline"))) {
+  if (!(await navigateByVisibleNav(page, /Alert Timeline/i, "/analytics/alerts", "Full alert timeline"))) {
     return;
   }
-  await showCaption(page, "Alert/Event Evolution: correlated events over time");
-  for (const range of ["24h", "7d", "1m", "1y"]) {
-    await clickWithDemoCursor(page, page.getByRole("button", { name: range }), `Timeline range: ${range}`, { actionKind: "range" });
-  }
+  await runDemoStep(page, "Alert/Event Evolution: correlated events over time", async () => {
+    for (const range of ["24h", "7d", "1m", "1y"]) {
+      await clickWithDemoCursor(page, page.getByRole("button", { name: range }), `Timeline range: ${range}`, { actionKind: "range" });
+    }
+  }, { importance: "important" });
   if (await clickFirstPositiveTimelineBucket(page)) {
-    await showCaption(page, "Alert drilldown: MITRE technique and severity badges");
-    await smoothScrollBy(page, 720);
-    await pauseForAction(page, "section");
-    await smoothScrollBy(page, 1700);
-    await showCaption(page, "Alert drilldowns load more results as the analyst scrolls");
+    await runDemoStep(page, "Alert drilldown: MITRE technique and severity badges", async () => {
+      await smoothScrollBy(page, 720);
+    });
+    await runDemoStep(page, "Alert drilldowns load more results as the analyst scrolls", async () => {
+      await smoothScrollBy(page, 1700);
+    }, { importance: "important" });
     await clickBackToTimeline(page);
   }
 }
 
 async function demonstrateMitre(page) {
-  if (!(await safeGotoOrContinue(page, "/analytics/mitre", "MITRE ATT&CK: event-weighted techniques"))) {
+  if (!(await navigateByVisibleNav(page, /MITRE/i, "/analytics/mitre", "MITRE ATT&CK: event-weighted techniques"))) {
     return;
   }
   await smoothScrollBy(page, 760);
@@ -692,30 +1013,22 @@ async function demonstrateMitre(page) {
     await clickWithDemoCursor(page, firstTechnique, "Opening a MITRE-filtered incident view");
     await waitForPage(page);
     await pauseForAction(page, "page");
-    await safeGotoOrContinue(page, "/analytics/mitre", "MITRE ATT&CK: event-weighted techniques");
+    await navigateByVisibleNav(page, /MITRE/i, "/analytics/mitre", "MITRE ATT&CK: event-weighted techniques");
   }
 }
 
 async function demonstrateIncidents(page) {
-  if (!(await safeGotoOrContinue(page, "/incidents", "Incident triage queue"))) {
+  if (!(await navigateByVisibleNav(page, /Incidents/i, "/incidents", "Incident triage queue"))) {
     return;
   }
-  await showCaption(page, "Incident filters: archive scope, severity, date");
-  await safeSelectAny(page, "Archive scope", ["false", "active"]);
-  await safeSelectAny(page, "Archive scope", ["all"]);
-  if (!(await safeSelect(page, "Severity", "critical"))) {
-    await safeSelect(page, "Severity", "high");
+  await pointAtIncidentFilters(page, "Incidents can be filtered by archive scope, severity, date, search text, and status.");
+  const archiveFilterApplied = await runDemoStep(page, "Archive scope includes active, archived, and all incidents.", () => applyArchiveScopeAll(page), { importance: "important" });
+  await runDemoStep(page, "Incidents load progressively as the analyst scrolls", async () => {
+    await smoothScrollBy(page, 1900);
+  }, { importance: "important" });
+  if (archiveFilterApplied) {
+    await clearIncidentFilters(page, "Clearing filters before opening an incident.");
   }
-  await safeSelect(page, "Date scope", "all");
-  if (await safeSelect(page, "Date scope", "day")) {
-    await safeSelect(page, "Date scope", "month");
-    await safeSelect(page, "Date scope", "year");
-    await safeSelect(page, "Date scope", "all");
-  }
-  await showCaption(page, "Incidents load progressively as the analyst scrolls");
-  await smoothScrollBy(page, 1900);
-  await pauseForAction(page, "section");
-  await clickWithDemoCursor(page, page.getByRole("button", { name: /clear filters/i }), "Clearing filters to show the full queue");
 
   const firstIncident = page.locator("main a[href^='/incidents/']").first();
   if (await firstIncident.count()) {
@@ -746,8 +1059,29 @@ async function demonstrateIncidentDetail(page) {
   await safeScrollToText(page, "Action History", "Notes, Timeline, and Action History");
 }
 
+async function demonstrateAdminAndAudit(page) {
+  if (await navigateByVisibleNav(page, /^Users$/i, "/admin/users", "Admin Users: multi-user RBAC management")) {
+    await safeScrollToText(page, "Create User", "Super admins can create analyst and viewer accounts.");
+    await safeScrollToText(page, "Admin Users", "Existing users are edited through explicit row actions.");
+    const firstRow = page.locator("article.admin-row").first();
+    if (await firstRow.count()) {
+      await smoothScrollToLocator(page, firstRow);
+      await moveCursorToLocator(page, firstRow.getByRole("button", { name: /save changes/i }).first());
+      await showCaption(page, "Display name and role edits stay local until Save changes is clicked.");
+      await pauseForAction(page, "section");
+    }
+  }
+
+  if (await navigateByVisibleNav(page, /^Audit$/i, "/admin/audit", "Admin Audit: login, user, permission, and action events")) {
+    await safeScrollToText(page, "Audit Metrics", "Audit metrics summarize recent security activity.");
+    await safeScrollToText(page, "Audit Events", "Audit events preserve the operational trail without exposing secrets.");
+    await smoothScrollBy(page, 760);
+    await pauseForAction(page, "section");
+  }
+}
+
 async function demonstrateReport(page) {
-  if (!(await safeGotoOrContinue(page, "/report", "Executive report: read-only SOC summary"))) {
+  if (!(await navigateByVisibleNav(page, /Report/i, "/report", "Executive report: read-only SOC summary"))) {
     return;
   }
 
@@ -771,7 +1105,8 @@ async function demonstrateReport(page) {
     return;
   }
 
-  await showCaption(page, "Generating the executive SOC report");
+  await showCaption(page, "Generating the executive SOC report", { wait: false });
+  await pauseForCaptionIntro(page);
   await moveCursorToLocator(page, page.locator(".report-panel").first());
   const reportReady = await waitForReportResult(page, initialText);
   if (reportReady) {
@@ -791,9 +1126,14 @@ async function maybeToggleTheme(page) {
   if (!toggleTheme) {
     return;
   }
-  await showCaption(page, "Theme check: light and dark mode");
-  await clickWithDemoCursor(page, page.getByRole("button", { name: /switch to dark|switch to light/i }));
-  await clickWithDemoCursor(page, page.getByRole("button", { name: /switch to dark|switch to light/i }));
+  await ensureDarkTheme(page);
+  await showCaption(page, "Dark mode remains active for the rest of the SOC analyst workflow.");
+}
+
+async function showFinalCaption(page) {
+  await ensureDarkTheme(page);
+  await showCaption(page, finalCaption, { wait: false });
+  await pause(page, Math.max(scaledTiming(2200), scaledTiming(finalCaptionMs)));
 }
 
 async function saveRecordedVideo(page) {
@@ -812,34 +1152,42 @@ async function main() {
     return;
   }
   const { chromium } = playwright;
-  await fs.rm(tempVideoDir, { recursive: true, force: true });
-  await fs.rm(outputVideo, { force: true });
-  await fs.mkdir(tempVideoDir, { recursive: true });
+  if (recordVideo) {
+    await fs.rm(tempVideoDir, { recursive: true, force: true });
+    await fs.rm(outputVideo, { force: true });
+    await fs.mkdir(tempVideoDir, { recursive: true });
+  }
 
-  const browser = await chromium.launch({ headless, slowMo });
+  const browser = await chromium.launch({ headless, slowMo, args: launchArgs() });
   let context;
   let page;
   let flowError;
   let saveError;
 
   try {
-    context = await browser.newContext({
+    const contextOptions = {
       viewport: { width: videoWidth, height: videoHeight },
-      recordVideo: {
+    };
+    if (recordVideo) {
+      contextOptions.recordVideo = {
         dir: tempVideoDir,
         size: { width: videoWidth, height: videoHeight },
-      },
-    });
+      };
+    }
+    context = await browser.newContext(contextOptions);
+    await setInitialTheme(context, demoStartTheme);
     page = await context.newPage();
     await login(page);
+    await switchDemoToDarkMode(page);
     await demonstrateDashboard(page);
     await demonstrateAlertTimeline(page);
     await demonstrateMitre(page);
     await demonstrateIncidents(page);
+    await demonstrateAdminAndAudit(page);
     await demonstrateReport(page);
-    await goto(page, "/dashboard", "Back to dashboard metrics");
+    await navigateByVisibleNav(page, /Dashboard/i, "/dashboard", "Back to dashboard metrics");
     await maybeToggleTheme(page);
-    await pauseForAction(page, "page");
+    await showFinalCaption(page);
   } catch (error) {
     flowError = error;
     console.error("Demo flow failed before completion:", error);
@@ -852,7 +1200,7 @@ async function main() {
       console.error("Could not close Playwright context cleanly:", error);
     }
     try {
-      if (page) {
+      if (recordVideo && page) {
         await saveRecordedVideo(page);
       }
     } catch (error) {
@@ -862,7 +1210,13 @@ async function main() {
     await browser.close().catch((error) => console.error("Could not close browser cleanly:", error));
   }
 
-  if (!saveError) {
+  if (!recordVideo) {
+    if (externalRecordingMode) {
+      console.log("External recording mode enabled; no Playwright video was saved.");
+    } else {
+      console.log("Playwright video recording disabled; no Playwright video was saved.");
+    }
+  } else if (!saveError) {
     console.log(`Demo video saved to: ${outputVideo}`);
     console.log("High-quality 4K MP4 conversion:");
     console.log(
@@ -872,9 +1226,9 @@ async function main() {
     console.log(
       `ffmpeg -y -i "${outputVideo}" -c:v libx264 -crf 23 -preset medium -pix_fmt yuv420p "${path.join(outputDir, "soc-ai-agent-demo.mp4")}"`,
     );
-    console.log("Safety reminder: this demo script is read-only for incident data.");
-    console.log("No incidents were approved, rejected, archived, unarchived, or executed by this script.");
   }
+  console.log("Safety reminder: this demo script is read-only for incident data.");
+  console.log("No incidents were approved, rejected, archived, unarchived, or executed by this script.");
   if (flowError || saveError) {
     process.exitCode = 1;
   }

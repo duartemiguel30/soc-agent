@@ -1,11 +1,68 @@
 export type AdminUser = {
+  id?: number;
   username: string;
+  display_name?: string | null;
   role?: string;
+  permissions?: string[];
+  is_active?: boolean;
+  created_at?: string | null;
+  updated_at?: string | null;
+  last_login_at?: string | null;
+  created_by?: number | null;
   session?: {
     created_at?: string;
     last_activity_at?: string;
     expires_at?: string;
   };
+};
+
+export type AdminRole = "super_admin" | "admin" | "analyst" | "viewer";
+
+export type AdminAuditEvent = {
+  id: number;
+  created_at?: string | null;
+  actor_user_id?: number | null;
+  actor_username?: string | null;
+  actor_role?: string | null;
+  event_type: string;
+  target_type?: string | null;
+  target_id?: string | null;
+  target_username?: string | null;
+  ip_address?: string | null;
+  user_agent?: string | null;
+  success: boolean;
+  details?: Record<string, unknown> | null;
+};
+
+export type AdminAuditEventsResponse = {
+  items: AdminAuditEvent[];
+  total: number;
+  limit: number;
+  offset: number;
+  has_more: boolean;
+};
+
+export type AdminAuditMetrics = {
+  successful_logins_24h: number;
+  failed_logins_24h: number;
+  active_sessions: number;
+  disabled_users: number;
+  total_users: number;
+  actions_by_type_7d: Record<string, number>;
+  actions_by_user_7d: Record<string, number>;
+  permission_denied_7d: number;
+  response_actions_7d: Record<string, number>;
+};
+
+export type AdminAuditEventParams = {
+  event_type?: string;
+  actor_username?: string;
+  target_username?: string;
+  success?: string;
+  from?: string;
+  to?: string;
+  limit?: number;
+  offset?: number;
 };
 
 export type Incident = {
@@ -203,11 +260,16 @@ export type IncidentObservable = {
 export type ResponseActionResult = {
   ok?: boolean;
   mode?: string;
+  status?: string;
   target?: string;
-  command?: string;
+  command_summary?: string | null;
+  returncode?: number;
+  stdout_truncated?: boolean;
+  stderr_truncated?: boolean;
   message?: string;
   needs_human_review?: boolean;
   already_present?: boolean;
+  command_template_configured?: boolean;
   reason?: string | null;
   [key: string]: unknown;
 };
@@ -220,11 +282,21 @@ export type ResponseAction = {
   required_observables: string[];
   available: boolean;
   availability_reason: string;
+  availability_status?: "available" | "unavailable" | "protected" | string;
   needs_human_review?: boolean;
   dry_run?: ResponseActionResult | null;
+  mode?: "dry_run" | "execute" | string | null;
+  result_status?: "manual" | "automated" | "dry_run" | "executed" | "failed" | "unavailable" | "protected" | string | null;
   suggested?: boolean;
   suggested_reason?: string | null;
   category?: "suggested" | "available" | "unavailable" | string;
+  automation_eligible?: boolean;
+  automated_attempt?: {
+    event_type?: string;
+    created_at?: string | null;
+    status?: string | null;
+    mode?: string | null;
+  } | null;
 };
 
 export type TimelineEvent = {
@@ -296,6 +368,64 @@ export function logout() {
 
 export function getCurrentUser() {
   return request<AdminUser>("/auth/me");
+}
+
+export function hasPermission(user: AdminUser | null | undefined, permission: string) {
+  return Boolean(user?.permissions?.includes(permission));
+}
+
+export function listAdminUsers() {
+  return request<AdminUser[]>("/admin/users");
+}
+
+export function createAdminUser(payload: { username: string; display_name?: string; role: AdminRole; password: string }) {
+  return request<AdminUser>("/admin/users", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateAdminUser(
+  id: number,
+  payload: { display_name?: string | null; role?: AdminRole; is_active?: boolean },
+) {
+  return request<AdminUser>(`/admin/users/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function resetAdminUserPassword(id: number, password: string) {
+  return request<{ ok: boolean }>(`/admin/users/${id}/reset-password`, {
+    method: "POST",
+    body: JSON.stringify({ password }),
+  });
+}
+
+export function disableAdminUser(id: number) {
+  return request<AdminUser>(`/admin/users/${id}/disable`, { method: "POST" });
+}
+
+export function enableAdminUser(id: number) {
+  return request<AdminUser>(`/admin/users/${id}/enable`, { method: "POST" });
+}
+
+export function listAdminAuditEvents(params: AdminAuditEventParams = {}) {
+  const search = new URLSearchParams({
+    limit: String(params.limit || 50),
+    offset: String(params.offset || 0),
+  });
+  if (params.event_type?.trim()) search.set("event_type", params.event_type.trim());
+  if (params.actor_username?.trim()) search.set("actor_username", params.actor_username.trim());
+  if (params.target_username?.trim()) search.set("target_username", params.target_username.trim());
+  if (params.success && params.success !== "all") search.set("success", params.success);
+  if (params.from) search.set("from", params.from);
+  if (params.to) search.set("to", params.to);
+  return request<AdminAuditEventsResponse>(`/admin/audit-events?${search.toString()}`);
+}
+
+export function getAdminAuditMetrics() {
+  return request<AdminAuditMetrics>("/admin/audit-metrics");
 }
 
 export function listIncidents(

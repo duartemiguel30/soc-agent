@@ -57,10 +57,13 @@ class AdminUser(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     username = Column(String, unique=True, index=True, nullable=False)
     password_hash = Column(String, nullable=False)
+    display_name = Column(String, nullable=True)
     role = Column(String, default="admin", nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime, default=func.now(), nullable=False)
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
+    last_login_at = Column(DateTime, nullable=True)
+    created_by = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
 
 
 class AdminSession(Base):
@@ -75,6 +78,24 @@ class AdminSession(Base):
     revoked_at = Column(DateTime, nullable=True)
     user_agent = Column(String, nullable=True)
     client_ip = Column(String, nullable=True)
+
+
+class AdminAuditEvent(Base):
+    __tablename__ = "admin_audit_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    created_at = Column(DateTime, default=func.now(), index=True, nullable=False)
+    actor_user_id = Column(Integer, nullable=True)
+    actor_username = Column(String, index=True, nullable=True)
+    actor_role = Column(String, nullable=True)
+    event_type = Column(String, index=True, nullable=False)
+    target_type = Column(String, nullable=True)
+    target_id = Column(String, nullable=True)
+    target_username = Column(String, index=True, nullable=True)
+    ip_address = Column(String, nullable=True)
+    user_agent = Column(String, nullable=True)
+    success = Column(Boolean, default=True, nullable=False)
+    details_json = Column(Text, nullable=True)
 
 
 class IncidentPlaybook(Base):

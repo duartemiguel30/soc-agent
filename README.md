@@ -4,20 +4,25 @@ SOC AI Agent is a lab SOC workflow application for Wazuh alert ingestion, Gemini
 
 The backend is FastAPI with SQLite persistence. The primary admin UI is the Next.js app in `frontend/`. The legacy FastAPI-served `static/index.html` remains available at `/` as a fallback.
 
+For a fuller architecture, operations, RBAC, data-flow, and safety guide, see [`DOCS.md`](DOCS.md).
+
 ## Current Capabilities
 
 - Public Wazuh webhook ingestion at `POST /webhook/wazuh`.
 - Gemini/LangGraph alert enrichment and classification.
-- SQLite-backed incidents, correlated alert events, admin users, admin sessions, notes, archive state, manual playbooks, action history, and observables.
-- Admin authentication with opaque HttpOnly session cookies.
-- Next.js admin console for dashboard, incidents, archive, incident detail, notes, playbooks, response actions, and report generation.
+- SQLite-backed incidents, correlated alert events, admin users, admin sessions, admin audit events, notes, archive state, manual playbooks, action history, and observables.
+- Multi-user admin authentication with opaque HttpOnly session cookies, RBAC roles, and sliding idle-session expiration.
+- Next.js admin console for dashboard, incidents, archive, incident detail, notes, playbooks, response actions, report generation, user management, and admin audit review.
 - Clean light/dark admin-console UI theme with centralized CSS variables for quick browser tuning.
 - Dashboard analytics for alert/event evolution, MITRE distribution, top agents, severity, and decisions.
 - Additive incident observables extracted from Wazuh/Sysmon payloads.
 - Alert correlation/deduplication groups repeated Wazuh alerts into one incident with event count, first seen, and last seen metadata.
 - Analyst-controlled response actions:
   - `block_source_ip`
-  - `disable_ad_account` in disabled/dry-run-only mode
+  - `disable_ad_account`
+  - `isolate_endpoint`
+  - `collect_host_context`
+- Policy-gated automatic response actions, disabled and dry-run by default.
 - Read-only `/report` endpoint that generates an executive summary from stored incidents.
 
 ## Safety Model
@@ -25,18 +30,19 @@ The backend is FastAPI with SQLite persistence. The primary admin UI is the Next
 This project is intentionally conservative.
 
 - Gemini can recommend actions, but it does not execute them.
-- Wazuh ingestion does not execute response actions.
+- Wazuh ingestion only evaluates automatic response actions after a new incident is created and analyzed. Automation is disabled by default and never runs for duplicate or correlated follow-up alert events.
 - Incident detail viewing is read-only unless the analyst explicitly submits notes, creates a playbook, changes checklist state, archives/unarchives, approves/rejects, or executes a response action.
 - Manual playbooks are created only by `POST /incidents/{id}/playbook`.
-- Response action dry-run previews are not logged to avoid noisy history.
+- Response action dry-run previews are logged only to admin audit events, not incident action history.
 - Explicit response action execute attempts are audited.
 - `response_action_executed` is reserved for real executed actions.
 - `response_action_dry_run_confirmed` records analyst-confirmed simulations where no real system state changed.
 - `response_action_failed` records failed requested actions or policy failures.
-- AD account disable is disabled by default and real AD execution is not implemented.
+- AD account disable, endpoint isolation, and host context command execution are disabled by default.
+- Destructive actions require explicit configuration and still enforce per-action safeguards.
 - `/report` is read-only and does not write incident history.
 
-Do not commit `.env`, `incidents.db`, `venv/`, `__pycache__/`, `.next/`, `node_modules/`, API keys, cookies, session tokens, password hashes, passwords, AD credentials, or other secrets.
+Do not commit `.env`, `.env.demo`, `.env.smoke`, `.env.tests`, `incidents.db`, `venv/`, `__pycache__/`, `.next/`, `node_modules/`, `demo-output/`, `smoke-output/`, `tests-output/`, generated videos/screenshots, API keys, cookies, session tokens, password hashes, passwords, AD credentials, command templates containing credentials, or other secrets.
 
 ## Backend Configuration
 
@@ -50,20 +56,52 @@ SESSION_IDLE_TIMEOUT_MINUTES=30
 INCIDENT_CORRELATION_WINDOW_MINUTES=15
 
 RESPONSE_ACTIONS_ENABLED=true
+
+AUTO_RESPONSE_ACTIONS_ENABLED=false
+AUTO_RESPONSE_ACTION_MODE=dry_run
+AUTO_RESPONSE_ALLOWED_ACTIONS=block_source_ip,isolate_endpoint
+AUTO_RESPONSE_MIN_SEVERITY=high
+AUTO_RESPONSE_REQUIRE_DECISION=auto_response
+
 AD_ACTIONS_ENABLED=false
 AD_ACTION_MODE=dry_run
 AD_DOMAIN=WINDOMAIN
-AD_DOMAIN_CONTROLLER=dc.windomain.local
+AD_LDAP_SERVER=
+AD_BASE_DN=DC=windomain,DC=local
+AD_BIND_DN=
+AD_BIND_PASSWORD=
 AD_PROTECTED_USERS=Administrator,admin,krbtgt,vagrant,Domain Admins,Enterprise Admins,Schema Admins
+
+ENDPOINT_ISOLATION_ENABLED=false
+ENDPOINT_ISOLATION_MODE=dry_run
+ENDPOINT_ISOLATION_PROTECTED_HOSTS=dc,wef,logger,dc.windomain.local,wef.windomain.local,192.168.56.102,192.168.56.103,192.168.56.105
+ENDPOINT_ISOLATION_COMMAND_TEMPLATE=
+ENDPOINT_ISOLATION_TIMEOUT_SECONDS=20
+
+HOST_CONTEXT_COLLECTION_ENABLED=false
+HOST_CONTEXT_COLLECTION_MODE=dry_run
+HOST_CONTEXT_COMMAND_TEMPLATE=
+HOST_CONTEXT_TIMEOUT_SECONDS=20
 ```
 
 `AUTH_COOKIE_SECURE=false` is for local HTTP lab use. Set it to `true` behind HTTPS.
 
 `SESSION_IDLE_TIMEOUT_MINUTES` controls admin inactivity timeout. The default is 30 minutes. Each authenticated request refreshes `last_activity_at` and extends `expires_at`; inactivity beyond the configured minutes requires logging in again. `SESSION_TTL_HOURS` is still accepted as a legacy fallback when `SESSION_IDLE_TIMEOUT_MINUTES` is missing, but new environments should use `SESSION_IDLE_TIMEOUT_MINUTES`.
 
+## Admin RBAC
+
+Admin users have one of four roles:
+
+- `super_admin`: full access, including user management, audit review, settings, incident actions, playbooks, notes, response actions, and report generation.
+- `admin`: incident operations, playbooks, notes, response action execution, reports, and audit review. Admins cannot manage users.
+- `analyst`: dashboard/incidents, triage work, playbooks, notes, response action previews, and reports. Analysts cannot manage users or execute response actions.
+- `viewer`: dashboard/incidents and report generation only.
+
+Backend permission checks are authoritative. The frontend hides unavailable controls and navigation, but forbidden API calls still return `403` and create a `permission_denied` admin audit event.
+
 `INCIDENT_CORRELATION_WINDOW_MINUTES` controls how long repeated related Wazuh alerts are grouped into an existing active incident. The default is 15 minutes.
 
-`AD_DOMAIN` and `AD_DOMAIN_CONTROLLER` are lab/runtime labels used in dry-run output. They are not credentials. Do not add AD credential placeholders to `.env.example`, and do not hardcode AD credentials.
+`AD_BIND_PASSWORD` and command credentials belong only in local `.env`, never in committed files. `.env.example` documents empty placeholders only.
 
 ## Running The Backend
 
@@ -75,7 +113,14 @@ source venv/bin/activate
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-The repository does not currently include a Python requirements file. Use the existing lab virtual environment or document dependencies separately before rebuilding the environment from scratch.
+The repository does not currently include a Python requirements file. Use the existing lab virtual environment or document dependencies separately before rebuilding the environment from scratch. Real AD LDAP execution requires the optional `ldap3` package in the runtime environment; dry-run mode does not require it.
+
+Install `ldap3` only in the lab/runtime venv where real AD LDAP execution is intentionally tested:
+
+```bash
+source venv/bin/activate
+pip install ldap3
+```
 
 ## Admin User Setup
 
@@ -95,25 +140,39 @@ Open SQLite:
 sqlite3 incidents.db
 ```
 
-Insert the admin row using the generated hash:
+Insert the first admin row using the generated hash:
 
 ```sql
-INSERT INTO admin_users (username, password_hash, role, is_active)
-VALUES ('admin', '<generated_hash>', 'admin', 1);
+INSERT INTO admin_users (username, password_hash, display_name, role, is_active)
+VALUES ('admin', '<generated_hash>', 'SOC Admin', 'super_admin', 1);
 ```
 
 Verify users and sessions:
 
 ```sql
-SELECT id, username, role, is_active, created_at FROM admin_users;
+SELECT id, username, display_name, role, is_active, created_at, last_login_at FROM admin_users;
 SELECT id, admin_user_id, created_at, last_activity_at, expires_at, revoked_at FROM admin_sessions;
+SELECT id, created_at, actor_username, event_type, target_username, success FROM admin_audit_events ORDER BY id DESC LIMIT 20;
 ```
 
 The browser receives only an opaque HttpOnly session cookie. SQLite stores only `token_hash`, never the raw session token. Admin sessions use sliding idle expiration: active use refreshes `last_activity_at`, `expires_at`, and the cookie max age; logout sets `revoked_at` immediately.
 
+Existing single-user databases are migrated safely at startup. If no active `super_admin` exists, the first active admin user is promoted to `super_admin` so user management remains reachable.
+
 ## Database Tables
 
-FastAPI calls `Base.metadata.create_all(bind=engine)` on startup and safely adds the auth-only `admin_sessions.last_activity_at` column when needed for existing SQLite databases. After pulling schema changes onto the logger VM, you can manually verify/create runtime tables:
+FastAPI calls `Base.metadata.create_all(bind=engine)` on startup and safely adds missing admin-only columns for existing SQLite databases:
+
+- `admin_users.display_name`
+- `admin_users.role`
+- `admin_users.is_active`
+- `admin_users.created_at`
+- `admin_users.updated_at`
+- `admin_users.last_login_at`
+- `admin_users.created_by`
+- `admin_sessions.last_activity_at`
+
+It also creates `admin_audit_events` when missing. After pulling schema changes onto the logger VM, you can manually verify/create runtime tables:
 
 ```bash
 cd ~/soc-agent
@@ -173,7 +232,7 @@ Incident API responses include:
 
 Older incidents with no alert-event rows report `event_count=1`, with `first_seen` and `last_seen` falling back to `created_at`.
 
-When a correlated alert provides additional observables, ingestion merges them into the same incident using the existing unique observable constraint. This can make response actions available later, but webhook ingestion still does not execute response actions.
+When a correlated alert provides additional observables, ingestion merges them into the same incident using the existing unique observable constraint. This can make response actions available later, but automatic response policy only evaluates newly created incidents, not duplicate or correlated follow-up events.
 
 ## Response Actions
 
@@ -185,11 +244,25 @@ Response actions appear on `/incidents/{id}` in the Next.js UI and are available
 
 Suggestion metadata is deterministic. It does not call Gemini and does not execute actions.
 
+### Automatic Response Policy
+
+Automatic response actions are controlled by:
+
+- `AUTO_RESPONSE_ACTIONS_ENABLED=false`
+- `AUTO_RESPONSE_ACTION_MODE=dry_run`
+- `AUTO_RESPONSE_ALLOWED_ACTIONS=block_source_ip,isolate_endpoint`
+- `AUTO_RESPONSE_MIN_SEVERITY=high`
+- `AUTO_RESPONSE_REQUIRE_DECISION=auto_response`
+
+Automation runs only after a new incident is created and AI analysis fields are stored. It does not run for exact duplicate alert hashes, correlated follow-up events, archived incidents, or incidents already approved/rejected. Failures are best-effort: they are logged, but they do not break webhook ingestion or incident creation.
+
+Automated actor is `system:auto_response`. Automated dry-runs, executions, unavailable actions, and failures are written to incident action history and admin audit without secrets.
+
 ### `block_source_ip`
 
 - Risk: medium.
 - Requires `src_ip`.
-- Dry-run shows the iptables DROP command.
+- Dry-run shows the intended target and safe action summary, not a persisted raw shell command.
 - Execute validates the IP, rejects loopback/multicast/unspecified addresses, checks whether the rule already exists, and fails clearly if the host is not Linux or `iptables` is unavailable.
 
 ### `disable_ad_account`
@@ -198,10 +271,11 @@ Suggestion metadata is deterministic. It does not call Gemini and does not execu
 - Requires `target_username`, `subject_username`, or `user`.
 - Disabled by default with `AD_ACTIONS_ENABLED=false`.
 - In `AD_ACTION_MODE=dry_run`, even explicit analyst confirmation does not disable an account.
+- In `AD_ACTION_MODE=execute`, real LDAP execution requires `AD_LDAP_SERVER`, `AD_BASE_DN`, `AD_BIND_DN`, `AD_BIND_PASSWORD`, the optional Python package `ldap3`, a valid target username, and a non-protected target.
 - If AD actions are disabled by configuration, the UI shows only compact unavailable status and does not show confirmation, reason, or execute controls.
 - The UI requires typing `DISABLE_ACCOUNT` and entering a reason before recording a dry-run confirmation.
 - Successful AD dry-run confirmation logs `response_action_dry_run_confirmed`, not `response_action_executed`.
-- Real WinRM/PowerShell AD disable execution is not implemented.
+- Real execution locates the account by `sAMAccountName`, reads `userAccountControl`, sets the disabled bit, and returns a structured result.
 
 High-risk AD dry-run confirmation request body:
 
@@ -209,9 +283,32 @@ High-risk AD dry-run confirmation request body:
 { "confirm": "DISABLE_ACCOUNT", "reason": "Analyst-approved containment rationale" }
 ```
 
-Username safety checks reject unsupported characters, machine accounts, protected usernames such as `Administrator`, `admin`, `krbtgt`, `vagrant`, admin-like names, and additional entries in `AD_PROTECTED_USERS`.
+Username safety checks reject unsupported characters, machine accounts, protected usernames such as `Administrator`, `admin`, `krbtgt`, `vagrant`, admin-like names, and additional entries in `AD_PROTECTED_USERS`. Real LDAP execution also blocks accounts with privileged `memberOf` groups, `adminCount=1`, or protected primary group RIDs such as Domain Admins, Enterprise Admins, Schema Admins, Administrators, Account Operators, Server Operators, Print Operators, and Backup Operators.
 
-Real AD execution is future work. If implemented later, credential handling must be designed separately and reviewed. Real execution should require explicit approval, lab testing, rollback procedure, audited execution, and safe credential storage outside code and `.env.example`.
+LDAP bind failures are reported generically. Bind passwords and command credentials must not be logged or committed.
+
+### `isolate_endpoint`
+
+- Risk: critical.
+- Requires a host/agent/IP observable.
+- Disabled by default with `ENDPOINT_ISOLATION_ENABLED=false`.
+- Dry-run by default with `ENDPOINT_ISOLATION_MODE=dry_run`.
+- Execute mode requires `ENDPOINT_ISOLATION_COMMAND_TEMPLATE`.
+- Protected hosts/IPs in `ENDPOINT_ISOLATION_PROTECTED_HOSTS` cannot be isolated.
+- Command templates support `{host}`, `{agent}`, `{agent_ip}`, and `{incident_id}` placeholders.
+- Commands run with `ENDPOINT_ISOLATION_TIMEOUT_SECONDS`; raw rendered commands and stdout/stderr contents are not returned or persisted. Results keep safe fields such as status, return code, and output-present/truncated flags.
+
+No destructive command is hardcoded. The command template must be supplied explicitly in local runtime configuration.
+
+### `collect_host_context`
+
+- Risk: low.
+- Requires a host/agent/IP observable.
+- Disabled by default with `HOST_CONTEXT_COLLECTION_ENABLED=false`.
+- Dry-run by default with `HOST_CONTEXT_COLLECTION_MODE=dry_run`.
+- Execute mode requires `HOST_CONTEXT_COMMAND_TEMPLATE`.
+- Uses the same `{host}`, `{agent}`, `{agent_ip}`, and `{incident_id}` placeholders and timeout pattern. Raw rendered commands and command output are not stored in admin audit or incident action history.
+- Intended for non-destructive collection or demo-safe simulation.
 
 ## Manual Playbooks, Notes, Timeline, And Archive
 
@@ -244,32 +341,42 @@ Session routes:
 
 - `POST /auth/login`: public login route.
 - `POST /auth/logout`: clears or revokes the session cookie when present.
-- `GET /auth/me`: requires a valid admin session.
+- `GET /auth/me`: requires a valid admin session and returns `username`, `display_name`, `role`, and `permissions`.
 
-Incident, report, and response routes require admin session authentication:
+Admin routes:
 
-- `GET /incidents`
-- `GET /incidents/pending`
-- `GET /incidents/archive`
-- `GET /incidents/{id}`
-- `GET /incidents/{id}/alert-events`
-- `GET /incidents/{id}/observables`
-- `GET /incidents/{id}/response-actions`
-- `POST /incidents/{id}/response-actions/{action_key}/dry-run`
-- `POST /incidents/{id}/response-actions/{action_key}/execute`
-- `GET /incidents/{id}/playbook`
-- `POST /incidents/{id}/playbook`
-- `PATCH /playbook/steps/{step_id}`
-- `GET /incidents/{id}/notes`
-- `POST /incidents/{id}/notes`
-- `GET /incidents/{id}/timeline`
-- `GET /incidents/{id}/actions`
-- `POST /incidents/{id}/archive`
-- `POST /incidents/{id}/unarchive`
-- `POST /incidents/{id}/approve`
-- `POST /incidents/{id}/reject`
-- `GET /analytics/alert-evolution`
-- `GET /report`
+- `GET /admin/users`: list admin users. Requires `manage_users`.
+- `POST /admin/users`: create an admin user. Requires `manage_users`.
+- `GET /admin/users/{user_id}`: read one admin user. Requires `manage_users`.
+- `PATCH /admin/users/{user_id}`: update display name, role, or active state. Requires `manage_users`.
+- `POST /admin/users/{user_id}/reset-password`: reset an admin password. Requires `manage_users`.
+- `POST /admin/users/{user_id}/disable`: disable login for a user. Requires `manage_users`.
+- `POST /admin/users/{user_id}/enable`: re-enable login for a user. Requires `manage_users`.
+- `GET /admin/audit-events`: filter admin audit events. Requires `view_audit`.
+- `GET /admin/audit-metrics`: admin audit metrics. Requires `view_audit`.
+
+Admin user safeguards:
+
+- Usernames are unique.
+- Roles must be `super_admin`, `admin`, `analyst`, or `viewer`.
+- Users are disabled instead of deleted.
+- Disabled users cannot log in.
+- The last active `super_admin` cannot be disabled or demoted.
+- Password hashes are never returned by the API.
+
+Incident, report, analytics, and response routes require admin session authentication plus RBAC permissions:
+
+- Dashboard/analytics data: `view_dashboard` or `view_incidents`, depending on endpoint.
+- Incident lists/details/timeline/notes/actions: `view_incidents`.
+- Approve/reject: `approve_incidents` / `reject_incidents`.
+- Archive/unarchive: `archive_incidents`.
+- Notes: `add_notes` for creation; viewing remains `view_incidents`.
+- Playbook creation and step updates: `manage_playbooks`.
+- Response action details and dry-run preview: `view_response_actions`.
+- Response action execute or confirmed dry-run: `execute_response_actions`.
+- Report generation: `generate_report`.
+
+Admin audit events are created for login success/failure, logout, session expiry, user management, permission denial, incident approve/reject/archive/unarchive, notes, playbook changes, response action dry-runs/execution/failures, and report generation. Normal read-only page views are not logged.
 
 Other public routes:
 
@@ -305,6 +412,11 @@ http://192.168.56.105:3000
 ```
 
 The UI supports a clean light/dark theme toggle in the header and mobile drawer. The selected theme is stored in `localStorage` under `soc_theme`; auth tokens are not stored in browser storage. Theme colors are centralized in `frontend/app/globals.css` under `:root` and `:root[data-theme="dark"]`; the fastest presentation-prep variables to adjust are `--bg`, `--panel`, `--line`, `--text`, `--muted`, `--accent`, `--accent-strong`, and the severity variables.
+
+The header shows the current user and role. Navigation and mutating controls are hidden when the authenticated user lacks the required permission, while backend RBAC remains authoritative. Admin pages are:
+
+- `/admin/users`: super-admin user management with create, role/display-name update, enable/disable, and password reset.
+- `/admin/audit`: audit metrics, filtered audit event review, and progressive loading.
 
 Dashboard distribution charts are computed in the frontend from existing incident API responses. They use fields such as `severity`, `decision`, `mitre_technique`, `agent_name`, `event_count`, `first_seen`, `last_seen`, and `created_at`.
 
@@ -348,7 +460,7 @@ The frontend uses FastAPI's HttpOnly cookie through `/backend/*`. It uses `local
 
 ## Automated Demo Recording
 
-The frontend includes a Playwright-based demo recorder for polished presentation-style videos. It navigates the admin console, injects temporary on-screen captions and a fake cursor, uses smooth human-like scrolling, and records a browser video without changing production app behavior or storing auth tokens in browser storage. The demo is read-only for incident data.
+The frontend includes Playwright-based demo recorders for polished presentation-style videos. They navigate the admin console through visible UI/header links where possible, inject temporary on-screen captions and a fake default mouse cursor, use smooth human-like scrolling, and record browser videos without changing production app behavior or storing auth tokens in browser storage. The main demo is read-only for incident data.
 
 Prerequisites:
 
@@ -365,32 +477,45 @@ DEMO_ADMIN_USERNAME=admin DEMO_ADMIN_PASSWORD=admin npm run demo:record
 
 The recorder automatically loads demo environment variables from `frontend/.env.demo`, then falls back to `.env.demo` in the repository root. Shell environment variables take precedence over values in `.env.demo`, so one-off overrides can be passed inline. To use a custom file, set `DEMO_ENV_FILE=/custom/path/.env.demo`.
 
-Example `frontend/.env.demo` for faster 1080p local testing:
+Example `frontend/.env.demo` for faster 2K presentation recording:
 
 ```env
 #### video record ####
 DEMO_FRONTEND_URL=http://192.168.56.105:3000
 DEMO_HEADLESS=false
+DEMO_EXTERNAL_RECORDING_MODE=false
+DEMO_RECORD_VIDEO=true
+DEMO_FULLSCREEN=false
+DEMO_START_DELAY_MS=5000
 
-## 1080 ##
-DEMO_VIDEO_WIDTH=1920
-DEMO_VIDEO_HEIGHT=1080
 DEMO_SPEED=normal
-DEMO_CAPTION_MIN_MS=1400
-DEMO_CAPTION_MAX_MS=3200
-DEMO_CAPTION_PER_CHAR_MS=32
-DEMO_PAGE_MIN_MS=1200
-DEMO_PAGE_MAX_MS=2600
-DEMO_CLICK_PAUSE_MS=650
-DEMO_HOVER_PAUSE_MS=420
-DEMO_FILTER_PAUSE_MS=900
-DEMO_RANGE_PAUSE_MS=850
-DEMO_SECTION_PAUSE_MS=1200
-DEMO_SCROLL_MIN_MS=650
-DEMO_SCROLL_MAX_MS=1600
-DEMO_SLOW_MO_MS=220
+DEMO_SPEED_MULTIPLIER=0.8
+
+DEMO_VIDEO_WIDTH=2560
+DEMO_VIDEO_HEIGHT=1440
+
+DEMO_CAPTION_MIN_MS=1000
+DEMO_CAPTION_MAX_MS=3000
+DEMO_CAPTION_PER_CHAR_MS=25
+
+DEMO_PAGE_MIN_MS=1000
+DEMO_PAGE_MAX_MS=2500
+
+DEMO_CLICK_PAUSE_MS=500
+DEMO_HOVER_PAUSE_MS=400
+DEMO_FILTER_PAUSE_MS=800
+DEMO_RANGE_PAUSE_MS=800
+DEMO_SECTION_PAUSE_MS=1000
+
+DEMO_SCROLL_MIN_MS=600
+DEMO_SCROLL_MAX_MS=1500
+
 DEMO_GENERATE_REPORT=true
 DEMO_REPORT_TIMEOUT_MS=90000
+
+DEMO_START_THEME=light
+DEMO_SWITCH_TO_DARK_AFTER_LOGIN=true
+DEMO_ROLES_THEME=dark
 ```
 
 Example 4K presentation block:
@@ -409,14 +534,21 @@ Optional variables:
 - `DEMO_ADMIN_USERNAME`: defaults to `admin` for local demo convenience.
 - `DEMO_ADMIN_PASSWORD`: defaults to `admin` for local demo convenience.
 - `DEMO_HEADLESS`: defaults to `false` for visible local recording; set `DEMO_HEADLESS=true` for headless runs.
+- `DEMO_EXTERNAL_RECORDING_MODE`: defaults to `false`; when `true`, launches headed/fullscreen-friendly and defaults Playwright video recording off.
+- `DEMO_RECORD_VIDEO`: defaults to `true` normally and `false` in external recording mode unless explicitly set.
+- `DEMO_FULLSCREEN`: defaults to `false`; when `true`, launches Chromium with fullscreen-friendly window arguments.
+- `DEMO_START_DELAY_MS`: defaults to `5000`; used before visible demo actions in external recording mode or when explicitly set.
 - `DEMO_VIDEO_WIDTH`: defaults to `1920`.
 - `DEMO_VIDEO_HEIGHT`: defaults to `1080`.
 - `DEMO_SPEED`: supports `slow`, `normal`, or `fast`; defaults to `normal`.
-- `DEMO_SPEED_MULTIPLIER`: optional numeric multiplier such as `0.85`; overrides `DEMO_SPEED`.
+- `DEMO_SPEED_MULTIPLIER`: optional numeric multiplier such as `0.8`; when set, it takes precedence over `DEMO_SPEED` and scales captions, pauses, cursor glide, scrolling, and slow-mo timing.
 - `DEMO_SLOW_MO_MS`: defaults to `120`.
 - `DEMO_CAPTION_MIN_MS`: defaults to `1400`.
 - `DEMO_CAPTION_MAX_MS`: defaults to `3200`.
 - `DEMO_CAPTION_PER_CHAR_MS`: defaults to `32`.
+- `DEMO_CAPTION_INTRO_MS`: defaults to `350`; short pause after a caption appears before its action starts.
+- `DEMO_STEP_SETTLE_MS`: defaults to `700`; pause after normal captioned actions.
+- `DEMO_IMPORTANT_STEP_SETTLE_MS`: defaults to `1100`; pause after important captioned actions.
 - `DEMO_PAGE_MIN_MS`: defaults to `1200`.
 - `DEMO_PAGE_MAX_MS`: defaults to `2600`.
 - `DEMO_CLICK_PAUSE_MS`: defaults to `650`.
@@ -428,7 +560,17 @@ Optional variables:
 - `DEMO_SCROLL_MAX_MS`: defaults to `1600`.
 - `DEMO_GENERATE_REPORT`: defaults to `true`; the recorder clicks `Generate report` on `/report`.
 - `DEMO_REPORT_TIMEOUT_MS`: defaults to `90000`; controls how long the recorder waits for generated report output.
-- `DEMO_TOGGLE_THEME=true`: toggles light/dark mode once during the recording.
+- `DEMO_START_THEME`: defaults to `light`; the main demo opens login/dashboard in light mode.
+- `DEMO_SWITCH_TO_DARK_AFTER_LOGIN`: defaults to `true`; the main demo visibly switches to dark mode after login and stays dark.
+- `DEMO_ROLES_THEME`: defaults to `dark`; role-based demo videos start and stay dark.
+- `DEMO_ROLES_OUTPUT_DIR`: defaults to `demo-output/roles`; destination for role-based videos and result JSON.
+- `DEMO_ROLES_CREATE_USERS`: defaults to `true`; creates disposable analyst/viewer demo users for role walkthroughs.
+- `DEMO_ROLES_DISABLE_CREATED_USERS`: defaults to `true`; disables disposable role demo users during cleanup.
+- `DEMO_ROLES_GENERATE_REPORT`: defaults to `false`; role videos open `/report` but avoid repeated AI report generation unless enabled.
+- `DEMO_ROLES_INCLUDE_ADMIN_USER_CREATION`: defaults to `true`; super-admin video demonstrates safe user creation/update/reset behavior.
+- `DEMO_ROLES_INCLUDE_FORBIDDEN_CHECKS`: defaults to `true`; analyst/viewer videos show forbidden admin areas or backend denial checks cleanly.
+- `DEMO_FINAL_CAPTION`: defaults to `Hope you enjoyed the presentation`.
+- `DEMO_FINAL_CAPTION_MS`: defaults to `2600`; controls the closing caption hold.
 - `DEMO_ENV_FILE`: optional path to a specific demo env file.
 
 For faster local test recordings, override the video size:
@@ -443,17 +585,36 @@ For final 4K recording, keep the same pacing and only override output size/headl
 DEMO_VIDEO_WIDTH=3840 DEMO_VIDEO_HEIGHT=2160 DEMO_HEADLESS=true DEMO_ADMIN_USERNAME=admin DEMO_ADMIN_PASSWORD=admin npm run demo:record
 ```
 
-The output video is saved at:
+### OBS / External Recording
+
+Playwright's internal `recordVideo` output is convenient, but bitrate/FPS control is limited. For highest quality, let Playwright control the browser while OBS, NVIDIA, or Windows capture records the fullscreen browser at 1440p/4K, 60 FPS, and a high bitrate.
+
+Recommended `.env.demo` overrides:
+
+```env
+DEMO_EXTERNAL_RECORDING_MODE=true
+DEMO_RECORD_VIDEO=false
+DEMO_FULLSCREEN=true
+DEMO_HEADLESS=false
+DEMO_VIDEO_WIDTH=2560
+DEMO_VIDEO_HEIGHT=1440
+DEMO_START_DELAY_MS=5000
+```
+
+With `DEMO_RECORD_VIDEO=false`, the demo still runs with the injected cursor, captions, and smooth scrolling, but no Playwright `.webm` is saved. The role recorder still writes `demo-output/roles/role-demo-results.json`.
+
+In normal Playwright recording mode, the output video is saved at:
 
 ```text
 demo-output/soc-ai-agent-demo.webm
 ```
 
-Optional high-quality 4K MP4 conversion if `ffmpeg` is installed:
+Optional very high-quality MP4 conversion if `ffmpeg` is installed:
 
 ```bash
 ffmpeg -y -i demo-output/soc-ai-agent-demo.webm \
-  -c:v libx264 -crf 18 -preset slow -pix_fmt yuv420p \
+  -c:v libx264 -preset slow -crf 14 -pix_fmt yuv420p -movflags +faststart \
+  -c:a aac -b:a 192k \
   demo-output/soc-ai-agent-demo-4k.mp4
 ```
 
@@ -461,13 +622,47 @@ Faster test conversion:
 
 ```bash
 ffmpeg -y -i demo-output/soc-ai-agent-demo.webm \
-  -c:v libx264 -crf 23 -preset medium -pix_fmt yuv420p \
+  -c:v libx264 -crf 23 -preset medium -pix_fmt yuv420p -movflags +faststart \
+  -c:a aac -b:a 160k \
   demo-output/soc-ai-agent-demo.mp4
 ```
 
-The demo covers dashboard metrics, Alert/Event Evolution, alert timeline drilldowns, MITRE analytics, incident filters and progressive loading, incident detail sections, response-action availability, and `/report`. On `/report`, it clicks `Generate report` by default and waits for the read-only generated executive summary to appear. This may call Gemini or another upstream AI service and can take time. Captions intentionally stay visible long enough for viewers to read them, and the injected cursor exists only during recording.
+The demo covers dashboard metrics, Alert/Event Evolution, alert timeline drilldowns, MITRE analytics, incident filters and progressive loading, incident detail sections, response-action availability, admin users, admin audit, and `/report`. Normal app navigation is recorded through visible header/navigation clicks rather than invisible URL jumps. On `/report`, it clicks `Generate report` by default and waits for the read-only generated executive summary to appear. This may call Gemini or another upstream AI service and can take time. The main demo starts in light mode, visibly switches to dark mode after login, then remains dark without intentional refreshes or light-mode flicker. Captions are synchronized with the visible cursor, click, scroll, and navigation actions, and the demo returns to the dashboard for a closing caption before recording ends. The injected cursor exists only during recording.
 
 The demo flow opens pages, changes read-only filters, scrolls, opens drilldowns, opens an incident detail, and generates the read-only report; it does not approve, reject, archive, unarchive, execute response actions, create notes, update playbook steps, or create playbooks.
+
+## Role-Based Demo Videos
+
+For polished role-specific walkthroughs, run the separate role demo recorder:
+
+```bash
+cd frontend
+npm run demo:roles:video
+```
+
+This uses `.env.demo`, generates one video each for super-admin/admin, analyst, and viewer under `demo-output/roles/`, and stays separate from `npm run demo:record`. Role videos start and stay in dark mode, navigate through visible header/menu links where available, open the report page without generating repeated reports by default, return to the dashboard, and end with the closing caption. They are safe by default: they do not execute destructive response actions, do not approve/reject/archive incidents, and create disposable analyst/viewer demo users only when configured, disabling them during cleanup.
+
+Expected role demo outputs:
+
+```text
+demo-output/roles/role-super-admin.webm
+demo-output/roles/role-analyst.webm
+demo-output/roles/role-viewer.webm
+demo-output/roles/role-demo-results.json
+```
+
+## Visual Role Test Recordings
+
+The frontend also includes a separate Playwright role-test recorder. It is independent from the polished demo recorder and writes one video per role:
+
+```bash
+cd frontend
+npm run test:roles:video
+```
+
+The recorder loads configuration from `frontend/.env.tests`, then `.env.tests` in the repository root, or an explicit `TEST_ENV_FILE`. Shell environment variables take precedence. It creates disposable analyst/viewer users by default, records admin/super_admin, analyst, and viewer flows, writes output under `tests-output/`, and disables generated test users during cleanup.
+
+The role recorder is safe by default: it does not execute destructive response actions, does not enable AD or endpoint isolation execution, does not approve/reject/archive incidents, and does not store auth tokens in `localStorage` or `sessionStorage`.
 
 ## Validation
 
@@ -480,6 +675,25 @@ npm run build
 npm run lint
 ```
 
+Admin/RBAC smoke validation:
+
+```bash
+cd frontend
+npm run smoke:admin
+```
+
+The smoke script creates unique disposable `smoke_*` analyst/viewer users, validates admin users UX, RBAC denial paths, audit visibility, response-action UI safety, and disables the disposable users during cleanup. It writes results and failure screenshots under `smoke-output/`, which is ignored by git. It does not execute response actions and does not store auth tokens in `localStorage` or `sessionStorage`.
+
+Useful smoke overrides:
+
+```bash
+SMOKE_FRONTEND_URL=http://192.168.56.105:3000 \
+SMOKE_BACKEND_URL=http://192.168.56.105:8000 \
+SMOKE_ADMIN_USERNAME=admin \
+SMOKE_ADMIN_PASSWORD=admin \
+npm run smoke:admin
+```
+
 For demos, run the full product manually because behavior depends on the live VM, Wazuh, FastAPI, Gemini configuration, auth state, and SQLite data.
 
 Manual correlation checks on the logger VM:
@@ -488,15 +702,21 @@ Manual correlation checks on the logger VM:
 - Re-send the exact same payload; the webhook should report it as a duplicate and not add another alert event.
 - Send the same pattern outside the window; a new incident should be created.
 - Archive an incident, then send the same pattern again; the archived incident should not receive new events.
-- Confirm no response action executes from `POST /webhook/wazuh`.
+- Confirm automation is disabled by default.
+- If testing automation, use `AUTO_RESPONSE_ACTIONS_ENABLED=true` with `AUTO_RESPONSE_ACTION_MODE=dry_run` first.
 
 ## Security Checklist
 
-- Keep `.env` and `incidents.db` local.
+- Keep `.env`, `.env.demo`, `.env.smoke`, `.env.tests`, and `incidents.db` local.
 - Do not commit secrets, hashes, cookies, session tokens, or AD credentials.
-- Keep `AD_ACTIONS_ENABLED=false` unless intentionally testing the dry-run AD workflow.
+- Keep generated videos/screenshots/results under `demo-output/`, `smoke-output/`, and `tests-output/` out of Git.
+- Keep `AUTO_RESPONSE_ACTIONS_ENABLED=false` unless intentionally testing policy-gated automation.
+- Keep `AUTO_RESPONSE_ACTION_MODE=dry_run` for demos.
+- Keep `AD_ACTIONS_ENABLED=false` unless intentionally testing the AD workflow.
 - Keep `AD_ACTION_MODE=dry_run` for demos.
 - Do not treat AD dry-run confirmation as real account disablement.
-- Do not add automatic response execution to `/webhook/wazuh`.
+- Keep `ENDPOINT_ISOLATION_ENABLED=false` unless intentionally testing endpoint isolation.
+- Keep `ENDPOINT_ISOLATION_MODE=dry_run` for demos.
+- Keep `HOST_CONTEXT_COLLECTION_ENABLED=false` unless intentionally testing host context collection.
 - Do not let Gemini directly execute defensive actions.
 - Keep `/report` read-only.

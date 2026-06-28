@@ -1,7 +1,8 @@
+import json
 import os
 from typing import Any
 
-from db.models import IncidentObservable
+from db.models import IncidentActionEvent, IncidentObservable
 from playbooks.service import log_action_event
 from response_actions.registry import get_response_action, get_response_actions
 
@@ -13,15 +14,47 @@ def env_bool(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return max(1, int(value))
+    except ValueError:
+        return default
+
+
 def response_action_config() -> dict:
     protected_users = os.getenv("AD_PROTECTED_USERS", "")
+    protected_hosts = os.getenv("ENDPOINT_ISOLATION_PROTECTED_HOSTS", "")
+    allowed_auto_actions = os.getenv("AUTO_RESPONSE_ALLOWED_ACTIONS", "block_source_ip,isolate_endpoint")
     return {
         "response_actions_enabled": env_bool("RESPONSE_ACTIONS_ENABLED", True),
         "ad_actions_enabled": env_bool("AD_ACTIONS_ENABLED", False),
         "ad_action_mode": os.getenv("AD_ACTION_MODE", "dry_run").strip().lower(),
         "ad_domain": os.getenv("AD_DOMAIN", "WINDOMAIN"),
         "ad_domain_controller": os.getenv("AD_DOMAIN_CONTROLLER", "dc.windomain.local"),
+        "ad_ldap_server": os.getenv("AD_LDAP_SERVER", "").strip(),
+        "ad_base_dn": os.getenv("AD_BASE_DN", "DC=windomain,DC=local").strip(),
+        "ad_bind_dn": os.getenv("AD_BIND_DN", "").strip(),
+        "ad_bind_password": os.getenv("AD_BIND_PASSWORD", ""),
         "ad_protected_users": [item.strip() for item in protected_users.split(",") if item.strip()],
+        "endpoint_isolation_enabled": env_bool("ENDPOINT_ISOLATION_ENABLED", False),
+        "endpoint_isolation_mode": os.getenv("ENDPOINT_ISOLATION_MODE", "dry_run").strip().lower(),
+        "endpoint_isolation_protected_hosts": [
+            item.strip() for item in protected_hosts.split(",") if item.strip()
+        ],
+        "endpoint_isolation_command_template": os.getenv("ENDPOINT_ISOLATION_COMMAND_TEMPLATE", ""),
+        "endpoint_isolation_timeout_seconds": env_int("ENDPOINT_ISOLATION_TIMEOUT_SECONDS", 20),
+        "host_context_collection_enabled": env_bool("HOST_CONTEXT_COLLECTION_ENABLED", False),
+        "host_context_collection_mode": os.getenv("HOST_CONTEXT_COLLECTION_MODE", "dry_run").strip().lower(),
+        "host_context_command_template": os.getenv("HOST_CONTEXT_COMMAND_TEMPLATE", ""),
+        "host_context_timeout_seconds": env_int("HOST_CONTEXT_TIMEOUT_SECONDS", 20),
+        "auto_response_actions_enabled": env_bool("AUTO_RESPONSE_ACTIONS_ENABLED", False),
+        "auto_response_action_mode": os.getenv("AUTO_RESPONSE_ACTION_MODE", "dry_run").strip().lower(),
+        "auto_response_allowed_actions": {item.strip() for item in allowed_auto_actions.split(",") if item.strip()},
+        "auto_response_min_severity": os.getenv("AUTO_RESPONSE_MIN_SEVERITY", "high").strip().lower(),
+        "auto_response_require_decision": os.getenv("AUTO_RESPONSE_REQUIRE_DECISION", "auto_response").strip().lower(),
     }
 
 
@@ -93,12 +126,62 @@ def suggested_metadata(action_key: str, incident, mapped: dict[str, list[str]], 
             return True, "Login or brute-force context with a username can justify account containment review."
         return False, None
 
+    if action_key == "isolate_endpoint":
+        if not any(mapped.get(key) for key in ("host", "agent_name", "agent_ip", "source_workstation")):
+            return False, None
+        if text_contains_any(context, ("isolate", "contain", "quarantine", "endpoint", "host")):
+            return True, "Incident context mentions endpoint containment and an endpoint target is available."
+        return False, None
+
+    if action_key == "collect_host_context":
+        if any(mapped.get(key) for key in ("host", "agent_name", "agent_ip", "source_workstation")):
+            return True, "Endpoint context collection is available for this incident target."
+        return False, None
+
     return False, None
+
+
+def action_automation_eligible(action_key: str, config: dict) -> bool:
+    return action_key in (config.get("auto_response_allowed_actions") or set())
+
+
+def last_automated_event(db, incident_id: str, action_key: str) -> dict | None:
+    events = (
+        db.query(IncidentActionEvent)
+        .filter(
+            IncidentActionEvent.incident_id == incident_id,
+            IncidentActionEvent.event_type.in_(
+                [
+                    "automated_response_action_dry_run",
+                    "automated_response_action_executed",
+                    "automated_response_action_failed",
+                ]
+            ),
+        )
+        .order_by(IncidentActionEvent.created_at.desc(), IncidentActionEvent.id.desc())
+        .all()
+    )
+    for event in events:
+        if not event.metadata_json:
+            continue
+        try:
+            metadata = json.loads(event.metadata_json)
+        except json.JSONDecodeError:
+            continue
+        if metadata.get("action_key") == action_key:
+            return {
+                "event_type": event.event_type,
+                "created_at": event.created_at,
+                "status": metadata.get("result_status"),
+                "mode": metadata.get("mode"),
+            }
+    return None
 
 
 def describe_actions(db, incident_id: str, incident=None) -> list[dict]:
     observables = list_observables(db, incident_id)
     mapped = observable_map(observables)
+    mapped.setdefault("incident_id", [incident_id])
     config = response_action_config()
     descriptions = []
     for action in get_response_actions():
@@ -106,6 +189,8 @@ def describe_actions(db, incident_id: str, incident=None) -> list[dict]:
         dry_run = action.dry_run(mapped, config) if availability["available"] else None
         suggested, suggested_reason = suggested_metadata(action.key, incident, mapped, availability["available"])
         category = "suggested" if availability["available"] and suggested else "available" if availability["available"] else "unavailable"
+        mode = dry_run.get("mode") if dry_run else None
+        result_status = dry_run.get("status") if dry_run else availability.get("status")
         descriptions.append(
             {
                 "key": action.key,
@@ -115,11 +200,16 @@ def describe_actions(db, incident_id: str, incident=None) -> list[dict]:
                 "required_observables": list(action.required_observables),
                 "available": availability["available"],
                 "availability_reason": availability["reason"],
+                "availability_status": availability.get("status") or ("available" if availability["available"] else "unavailable"),
                 "needs_human_review": availability.get("needs_human_review", False),
                 "dry_run": dry_run,
+                "mode": mode,
+                "result_status": result_status,
                 "suggested": suggested,
                 "suggested_reason": suggested_reason,
                 "category": category,
+                "automation_eligible": action_automation_eligible(action.key, config),
+                "automated_attempt": last_automated_event(db, incident_id, action.key),
             }
         )
     return descriptions
@@ -132,6 +222,7 @@ def dry_run_action(db, incident_id: str, action_key: str) -> dict:
 
     observables = list_observables(db, incident_id)
     mapped = observable_map(observables)
+    mapped.setdefault("incident_id", [incident_id])
     config = response_action_config()
     availability = action.availability(mapped, config)
     if not availability["available"]:
@@ -146,6 +237,26 @@ def action_event_type(result: dict) -> str:
     if result.get("mode") == "dry_run":
         return "response_action_dry_run_confirmed"
     return "response_action_executed"
+
+
+SAFE_RESULT_KEYS = {
+    "ok",
+    "mode",
+    "status",
+    "target",
+    "message",
+    "returncode",
+    "already_present",
+    "needs_human_review",
+    "command_template_configured",
+    "command_summary",
+    "stdout_truncated",
+    "stderr_truncated",
+}
+
+
+def safe_action_result_for_persistence(result: dict) -> dict:
+    return {key: value for key, value in result.items() if key in SAFE_RESULT_KEYS}
 
 
 def action_event_message(action, result: dict) -> str:
@@ -171,6 +282,7 @@ def execute_action(db, incident_id: str, action_key: str, actor: str | None, rea
 
     observables = list_observables(db, incident_id)
     mapped = observable_map(observables)
+    mapped.setdefault("incident_id", [incident_id])
     config = response_action_config()
     availability = action.availability(mapped, config)
     if not availability["available"]:
@@ -198,7 +310,13 @@ def execute_action(db, incident_id: str, action_key: str, actor: str | None, rea
             "action_key": action.key,
             "risk_level": action.risk_level,
             "reason": reason,
-            "result": {key: value for key, value in result.items() if key not in {"status_code"}},
+            "mode": result.get("mode") or "execute",
+            "actor": actor,
+            "target": result.get("target"),
+            "target_summary": result.get("target"),
+            "result_status": result.get("status") or ("executed" if result.get("ok") else "failed"),
+            "command_summary": result.get("command_summary"),
+            "result": safe_action_result_for_persistence(result),
         },
     )
     db.commit()

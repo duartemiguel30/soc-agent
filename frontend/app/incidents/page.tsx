@@ -732,6 +732,7 @@ function IncidentsContent() {
                       incidents={incidents}
                       onActionResult={(message, type) => setNotice({ message, type })}
                       onChanged={refresh}
+                      user={user}
                     />
                     <div className="pagination-sentinel" ref={sentinelRef}>
                       {loadingMore ? "Loading more incidents..." : hasMore ? "Scroll to load more incidents" : incidents.length > 0 ? "All matching incidents loaded" : null}

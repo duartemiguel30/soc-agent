@@ -42,12 +42,12 @@ class BlockSourceIpAction:
         if error:
             return {"ok": False, "message": error}
 
-        command = self._iptables_command(ip)
         return {
             "ok": True,
             "mode": "dry_run",
+            "status": "dry_run",
             "target": ip,
-            "command": " ".join(command),
+            "command_summary": "configured local firewall block command",
             "message": f"Would add an iptables DROP rule for {ip}.",
         }
 
@@ -89,8 +89,8 @@ class BlockSourceIpAction:
             return {
                 "ok": False,
                 "target": ip,
-                "command": " ".join(command),
-                "stderr": result.stderr.strip(),
+                "returncode": result.returncode,
+                "stderr_truncated": bool((result.stderr or "").strip()),
                 "needs_human_review": True,
                 "message": "Failed to add iptables DROP rule.",
             }
@@ -98,7 +98,9 @@ class BlockSourceIpAction:
         return {
             "ok": True,
             "target": ip,
-            "command": " ".join(command),
+            "mode": "execute",
+            "status": "executed",
+            "command_summary": "configured local firewall block command",
             "reason": reason,
             "message": f"Added iptables DROP rule for {ip}.",
         }
