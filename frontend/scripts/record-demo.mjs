@@ -97,7 +97,7 @@ const username = process.env.DEMO_ADMIN_USERNAME || "admin";
 const password = process.env.DEMO_ADMIN_PASSWORD || "admin";
 const headless = process.env.DEMO_HEADLESS ? process.env.DEMO_HEADLESS !== "false" : false;
 const speedMultiplier = demoSpeedMultiplier();
-const slowMo = envNumber("DEMO_SLOW_MO_MS", "120");
+const slowMo = Math.round(envNumber("DEMO_SLOW_MO_MS", "120") * speedMultiplier);
 const videoWidth = envNumber("DEMO_VIDEO_WIDTH", "1920");
 const videoHeight = envNumber("DEMO_VIDEO_HEIGHT", "1080");
 const generateReportInDemo = process.env.DEMO_GENERATE_REPORT !== "false";
@@ -392,7 +392,7 @@ async function ensureDemoCursor(page) {
 async function glideCursorTo(page, x, y, options = {}) {
   await ensureDemoCursor(page);
   await page.evaluate(
-    ({ nextX, nextY, minDuration, maxDuration, durationOverride }) =>
+    ({ nextX, nextY, minDuration, maxDuration, durationOverride, durationMultiplier }) =>
       new Promise((resolve) => {
       const cursor = document.getElementById("soc-demo-cursor");
       if (!cursor) {
@@ -403,7 +403,7 @@ async function glideCursorTo(page, x, y, options = {}) {
         const currentX = Number(cursor.dataset.x || cursor.style.left.replace("px", "") || 48);
         const currentY = Number(cursor.dataset.y || cursor.style.top.replace("px", "") || 48);
         const distance = Math.hypot(nextX - currentX, nextY - currentY);
-        const duration = durationOverride || Math.min(maxDuration, Math.max(minDuration, distance * 1.2));
+        const duration = durationOverride || Math.min(maxDuration, Math.max(minDuration, distance * 1.2 * durationMultiplier));
         const start = performance.now();
         const easeOutCubic = (value) => 1 - Math.pow(1 - value, 3);
 
@@ -435,6 +435,7 @@ async function glideCursorTo(page, x, y, options = {}) {
       minDuration: scaledTiming(options.minDuration ?? 320),
       maxDuration: scaledTiming(options.maxDuration ?? 900),
       durationOverride: options.duration ? scaledTiming(options.duration) : null,
+      durationMultiplier: speedMultiplier,
     },
   );
   await page.mouse.move(x, y).catch(() => undefined);
@@ -479,7 +480,7 @@ async function currentScrollY(page) {
 
 async function smoothScrollToY(page, targetY, options = {}) {
   await page.evaluate(
-    ({ nextY, minDuration, maxDuration, durationOverride }) =>
+    ({ nextY, minDuration, maxDuration, durationOverride, durationMultiplier }) =>
       new Promise((resolve) => {
         const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
         const startY = window.scrollY || document.documentElement.scrollTop || 0;
@@ -490,7 +491,7 @@ async function smoothScrollToY(page, targetY, options = {}) {
           return;
         }
 
-        const duration = durationOverride || Math.min(maxDuration, Math.max(minDuration, Math.abs(distance) * 0.45));
+        const duration = durationOverride || Math.min(maxDuration, Math.max(minDuration, Math.abs(distance) * 0.45 * durationMultiplier));
         const start = performance.now();
         const easeOutCubic = (value) => 1 - Math.pow(1 - value, 3);
 
@@ -512,6 +513,7 @@ async function smoothScrollToY(page, targetY, options = {}) {
       minDuration: scaledTiming(options.minDuration ?? timing.scrollMin),
       maxDuration: scaledTiming(options.maxDuration ?? timing.scrollMax),
       durationOverride: options.duration ? scaledTiming(options.duration) : null,
+      durationMultiplier: speedMultiplier,
     },
   );
 }
@@ -606,27 +608,106 @@ async function clickWithDemoCursor(page, locator, caption, options = {}) {
   }
 }
 
+async function fillWithDemoCursor(page, locator, value, caption, options = {}) {
+  const target = locator.first();
+  const fillAction = async () => {
+    await smoothScrollToLocator(page, target, { desiredY: Math.round((page.viewportSize()?.height || videoHeight) * 0.42) });
+    await moveCursorToLocator(page, target);
+    await pauseForAction(page, "hover");
+    await setDemoCursorClicking(page, true);
+    await target.click({ timeout: options.timeout || 2200 });
+    await pause(page, scaledTiming(120));
+    await setDemoCursorClicking(page, false);
+    await target.fill(value);
+  };
+  if (caption) {
+    await runDemoStep(page, caption, fillAction, { importance: options.importance || "normal" });
+  } else {
+    await fillAction();
+    await pauseForAction(page, options.actionKind || "click");
+  }
+}
+
+async function selectWithDemoCursor(page, locator, value, caption, options = {}) {
+  const target = locator.first();
+  const selectAction = async () => {
+    await smoothScrollToLocator(page, target, { desiredY: Math.round((page.viewportSize()?.height || videoHeight) * 0.45) });
+    await moveCursorToLocator(page, target);
+    await pauseForAction(page, "hover");
+    await setDemoCursorClicking(page, true);
+    await target.click({ timeout: options.timeout || 2200 });
+    await pause(page, scaledTiming(120));
+    await setDemoCursorClicking(page, false);
+    await target.selectOption(value, { timeout: options.timeout || 1800 });
+  };
+  if (caption) {
+    await runDemoStep(page, caption, selectAction, { importance: options.importance || "normal" });
+  } else {
+    await selectAction();
+    await pauseForAction(page, options.actionKind || "filter");
+  }
+}
+
 async function safeSelect(page, label, value) {
   try {
     const field = page.getByLabel(label).first();
-    await smoothScrollToLocator(page, field, { desiredY: Math.round((page.viewportSize()?.height || videoHeight) * 0.45) });
-    await moveCursorToLocator(page, field);
-    await pauseForAction(page, "hover");
-    await field.selectOption(value, { timeout: 1800 });
-    await pauseForAction(page, "filter");
+    await selectWithDemoCursor(page, field, value);
     return true;
   } catch {
     return false;
   }
 }
 
-async function safeSelectAny(page, label, values) {
-  for (const value of values) {
-    if (await safeSelect(page, label, value)) {
-      return value;
-    }
+async function pointAtControl(page, locator) {
+  const target = locator.first();
+  if (!(await target.count().catch(() => 0))) {
+    return false;
   }
-  return null;
+  if (!(await target.isVisible().catch(() => false))) {
+    return false;
+  }
+  await smoothScrollToLocator(page, target, { desiredY: Math.round((page.viewportSize()?.height || videoHeight) * 0.38) });
+  await moveCursorToLocator(page, target);
+  await pauseForAction(page, "hover");
+  return true;
+}
+
+async function pointAtIncidentFilters(page, caption) {
+  await runDemoStep(page, caption, async () => {
+    await smoothScrollToY(page, 0);
+    await pointAtControl(page, page.getByRole("heading", { name: /^Incidents$/i }));
+    const filterPanel = page.locator(".filter-panel").first();
+    if (await filterPanel.count().catch(() => 0)) {
+      await smoothScrollToLocator(page, filterPanel, { desiredY: Math.round((page.viewportSize()?.height || videoHeight) * 0.35) });
+    }
+    const controls = [
+      page.getByLabel("Archive scope"),
+      page.getByLabel("Status"),
+      page.getByLabel("Severity"),
+      page.getByLabel("Search incidents"),
+      page.getByLabel("Date scope"),
+    ];
+    for (const control of controls) {
+      await pointAtControl(page, control);
+    }
+  }, { importance: "important" });
+}
+
+async function applyArchiveScopeAll(page) {
+  const selected = await safeSelect(page, "Archive scope", "all");
+  if (selected) {
+    await pauseForAction(page, "filter");
+  }
+  return selected;
+}
+
+async function clearIncidentFilters(page, caption) {
+  const cleared = await clickWithDemoCursor(page, page.getByRole("button", { name: /clear filters/i }), caption, { actionKind: "filter" });
+  if (cleared) {
+    await waitForPage(page);
+    await pauseForAction(page, "filter");
+  }
+  return cleared;
 }
 
 async function safeGotoOrContinue(page, pathname, caption) {
@@ -689,6 +770,80 @@ async function goto(page, pathname, caption) {
   await pauseForAction(page, "page");
 }
 
+async function waitForRoute(page, pathname) {
+  if (!pathname) {
+    await waitForPage(page);
+    return;
+  }
+  await page
+    .waitForFunction((nextPath) => window.location.pathname === nextPath, pathname, { timeout: 8000 })
+    .catch(() => undefined);
+  await waitForPage(page);
+}
+
+async function visibleNavLink(page, labelOrRegex) {
+  const candidates = Array.isArray(labelOrRegex) ? labelOrRegex : [labelOrRegex];
+  for (const name of candidates) {
+    const links = page.getByRole("link", { name });
+    const count = await links.count().catch(() => 0);
+    for (let index = 0; index < count; index += 1) {
+      const link = links.nth(index);
+      if (await link.isVisible().catch(() => false)) {
+        return link;
+      }
+    }
+  }
+  return null;
+}
+
+async function visiblePageLinkByHref(page, href) {
+  const links = page.locator(`a[href="${href}"]`);
+  const count = await links.count().catch(() => 0);
+  for (let index = 0; index < count; index += 1) {
+    const link = links.nth(index);
+    if (await link.isVisible().catch(() => false)) {
+      return link;
+    }
+  }
+  return null;
+}
+
+async function navigateByVisibleNav(page, labelOrRegex, fallbackPath, caption, options = {}) {
+  const link = await visibleNavLink(page, labelOrRegex);
+  if (link) {
+    await clickWithDemoCursor(page, link, caption, { actionKind: options.importance || "important" });
+    await waitForRoute(page, fallbackPath);
+    if (keepDarkTheme) {
+      await ensureDarkTheme(page);
+    }
+    return true;
+  }
+
+  let pageLink = await visiblePageLinkByHref(page, fallbackPath);
+  if (!pageLink && fallbackPath.startsWith("/analytics/")) {
+    const dashboardLink = await visibleNavLink(page, /Dashboard/i);
+    const currentPath = await page.evaluate(() => window.location.pathname).catch(() => "");
+    if (dashboardLink && currentPath !== "/dashboard") {
+      await clickWithDemoCursor(page, dashboardLink, "Opening Dashboard to use the visible analytics shortcut.", { actionKind: "important" });
+      await waitForRoute(page, "/dashboard");
+    }
+    pageLink = await visiblePageLinkByHref(page, fallbackPath);
+  }
+  if (pageLink) {
+    console.log(`[INFO] Header nav link not found for ${fallbackPath}; using a visible page link instead.`);
+    await clickWithDemoCursor(page, pageLink, caption, { actionKind: options.importance || "important" });
+    await waitForRoute(page, fallbackPath);
+    if (keepDarkTheme) {
+      await ensureDarkTheme(page);
+    }
+    return true;
+  }
+
+  console.warn(`[WARN] Visible nav link not found for ${fallbackPath}; falling back to direct navigation.`);
+  await goto(page, fallbackPath, caption);
+  return false;
+}
+
 async function clickBackToTimeline(page) {
   if (await clickWithDemoCursor(page, page.getByRole("link", { name: /back to timeline/i }), "Back to the full alert timeline")) {
     await waitForPage(page);
@@ -702,7 +857,7 @@ async function clickBackToTimeline(page) {
     await waitForPage(page);
     return true;
   }
-  await safeGotoOrContinue(page, "/analytics/alerts", "Full alert timeline");
+  await navigateByVisibleNav(page, /Alert Timeline/i, "/analytics/alerts", "Full alert timeline");
   return false;
 }
 
@@ -751,10 +906,8 @@ async function clickFirstPositiveTimelineBucket(page) {
 
 async function login(page) {
   await goto(page, "/login", "SOC AI Agent Demo");
-  await clickWithDemoCursor(page, page.getByLabel("Username"), "Signing in to the admin console");
-  await page.getByLabel("Username").fill(username);
-  await moveCursorToLocator(page, page.getByLabel("Password"));
-  await page.getByLabel("Password").fill(password);
+  await fillWithDemoCursor(page, page.getByLabel("Username"), username, "Signing in to the admin console");
+  await fillWithDemoCursor(page, page.getByLabel("Password"), password);
   await clickWithDemoCursor(page, page.getByRole("button", { name: /sign in/i }));
   await page.waitForURL(/\/dashboard/, { timeout: 15000 });
   await waitForPage(page);
@@ -789,11 +942,11 @@ async function demonstrateDashboard(page) {
   await safeScrollToText(page, "Top Agents", "Top agents by alert-event volume");
   await safeScrollToText(page, "Stored Severity Summary", "Stored incident summaries and active decision metrics");
   await safeScrollToText(page, "Active Decision Metrics", "Stored incident summaries and active decision metrics");
-  await safeGotoOrContinue(page, "/dashboard", "Dashboard metrics: incidents vs alert events");
+  await navigateByVisibleNav(page, /Dashboard/i, "/dashboard", "Dashboard metrics: incidents vs alert events");
 }
 
 async function demonstrateAlertTimeline(page) {
-  if (!(await safeGotoOrContinue(page, "/analytics/alerts", "Full alert timeline"))) {
+  if (!(await navigateByVisibleNav(page, /Alert Timeline/i, "/analytics/alerts", "Full alert timeline"))) {
     return;
   }
   await runDemoStep(page, "Alert/Event Evolution: correlated events over time", async () => {
@@ -813,7 +966,7 @@ async function demonstrateAlertTimeline(page) {
 }
 
 async function demonstrateMitre(page) {
-  if (!(await safeGotoOrContinue(page, "/analytics/mitre", "MITRE ATT&CK: event-weighted techniques"))) {
+  if (!(await navigateByVisibleNav(page, /MITRE/i, "/analytics/mitre", "MITRE ATT&CK: event-weighted techniques"))) {
     return;
   }
   await smoothScrollBy(page, 760);
@@ -823,31 +976,22 @@ async function demonstrateMitre(page) {
     await clickWithDemoCursor(page, firstTechnique, "Opening a MITRE-filtered incident view");
     await waitForPage(page);
     await pauseForAction(page, "page");
-    await safeGotoOrContinue(page, "/analytics/mitre", "MITRE ATT&CK: event-weighted techniques");
+    await navigateByVisibleNav(page, /MITRE/i, "/analytics/mitre", "MITRE ATT&CK: event-weighted techniques");
   }
 }
 
 async function demonstrateIncidents(page) {
-  if (!(await safeGotoOrContinue(page, "/incidents", "Incident triage queue"))) {
+  if (!(await navigateByVisibleNav(page, /Incidents/i, "/incidents", "Incident triage queue"))) {
     return;
   }
-  await runDemoStep(page, "Incident filters: archive scope, severity, date", async () => {
-    await safeSelectAny(page, "Archive scope", ["false", "active"]);
-    await safeSelectAny(page, "Archive scope", ["all"]);
-    if (!(await safeSelect(page, "Severity", "critical"))) {
-      await safeSelect(page, "Severity", "high");
-    }
-    await safeSelect(page, "Date scope", "all");
-    if (await safeSelect(page, "Date scope", "day")) {
-      await safeSelect(page, "Date scope", "month");
-      await safeSelect(page, "Date scope", "year");
-      await safeSelect(page, "Date scope", "all");
-    }
-  }, { importance: "important" });
+  await pointAtIncidentFilters(page, "Incidents can be filtered by archive scope, severity, date, search text, and status.");
+  const archiveFilterApplied = await runDemoStep(page, "Archive scope includes active, archived, and all incidents.", () => applyArchiveScopeAll(page), { importance: "important" });
   await runDemoStep(page, "Incidents load progressively as the analyst scrolls", async () => {
     await smoothScrollBy(page, 1900);
   }, { importance: "important" });
-  await clickWithDemoCursor(page, page.getByRole("button", { name: /clear filters/i }), "Clearing filters to show the full queue");
+  if (archiveFilterApplied) {
+    await clearIncidentFilters(page, "Clearing filters before opening an incident.");
+  }
 
   const firstIncident = page.locator("main a[href^='/incidents/']").first();
   if (await firstIncident.count()) {
@@ -879,7 +1023,7 @@ async function demonstrateIncidentDetail(page) {
 }
 
 async function demonstrateAdminAndAudit(page) {
-  if (await safeGotoOrContinue(page, "/admin/users", "Admin Users: multi-user RBAC management")) {
+  if (await navigateByVisibleNav(page, /^Users$/i, "/admin/users", "Admin Users: multi-user RBAC management")) {
     await safeScrollToText(page, "Create User", "Super admins can create analyst and viewer accounts.");
     await safeScrollToText(page, "Admin Users", "Existing users are edited through explicit row actions.");
     const firstRow = page.locator("article.admin-row").first();
@@ -891,7 +1035,7 @@ async function demonstrateAdminAndAudit(page) {
     }
   }
 
-  if (await safeGotoOrContinue(page, "/admin/audit", "Admin Audit: login, user, permission, and action events")) {
+  if (await navigateByVisibleNav(page, /^Audit$/i, "/admin/audit", "Admin Audit: login, user, permission, and action events")) {
     await safeScrollToText(page, "Audit Metrics", "Audit metrics summarize recent security activity.");
     await safeScrollToText(page, "Audit Events", "Audit events preserve the operational trail without exposing secrets.");
     await smoothScrollBy(page, 760);
@@ -900,7 +1044,7 @@ async function demonstrateAdminAndAudit(page) {
 }
 
 async function demonstrateReport(page) {
-  if (!(await safeGotoOrContinue(page, "/report", "Executive report: read-only SOC summary"))) {
+  if (!(await navigateByVisibleNav(page, /Report/i, "/report", "Executive report: read-only SOC summary"))) {
     return;
   }
 
@@ -952,7 +1096,7 @@ async function maybeToggleTheme(page) {
 async function showFinalCaption(page) {
   await ensureDarkTheme(page);
   await showCaption(page, finalCaption, { wait: false });
-  await pause(page, Math.max(2200, scaledTiming(finalCaptionMs)));
+  await pause(page, Math.max(scaledTiming(2200), scaledTiming(finalCaptionMs)));
 }
 
 async function saveRecordedVideo(page) {
@@ -999,7 +1143,7 @@ async function main() {
     await demonstrateIncidents(page);
     await demonstrateAdminAndAudit(page);
     await demonstrateReport(page);
-    await goto(page, "/dashboard", "Back to dashboard metrics");
+    await navigateByVisibleNav(page, /Dashboard/i, "/dashboard", "Back to dashboard metrics");
     await maybeToggleTheme(page);
     await showFinalCaption(page);
   } catch (error) {

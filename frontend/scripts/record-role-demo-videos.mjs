@@ -76,9 +76,10 @@ const frontendUrl =
 const adminUsername = process.env.DEMO_ADMIN_USERNAME || "admin";
 const adminPassword = process.env.DEMO_ADMIN_PASSWORD || "admin";
 const headless = envBoolean("DEMO_HEADLESS", false);
+const multiplier = speedMultiplier();
 const videoWidth = envNumber("DEMO_VIDEO_WIDTH", 1920);
 const videoHeight = envNumber("DEMO_VIDEO_HEIGHT", 1080);
-const slowMo = envNumber("DEMO_SLOW_MO_MS", 80);
+const slowMo = Math.round(envNumber("DEMO_SLOW_MO_MS", 80) * multiplier);
 const outputDir = path.resolve(repoRoot, process.env.DEMO_ROLES_OUTPUT_DIR || "demo-output/roles");
 const resultsPath = path.join(outputDir, "role-demo-results.json");
 const screenshotsDir = path.join(outputDir, "screenshots");
@@ -97,7 +98,6 @@ const analystPassword = `DemoRole!${runId}A`;
 const viewerPassword = `DemoRole!${runId}V`;
 const viewerResetPassword = `DemoRole!${runId}R`;
 let viewerLoginPassword = viewerPassword;
-const multiplier = speedMultiplier();
 const timing = {
   captionMin: envNumber("DEMO_CAPTION_MIN_MS", 850),
   captionMax: envNumber("DEMO_CAPTION_MAX_MS", 2100),
@@ -341,7 +341,7 @@ async function hideCaption(page) {
 async function glideCursorTo(page, x, y, options = {}) {
   await installVisualHelpers(page);
   await page.evaluate(
-    ({ nextX, nextY, minDuration, maxDuration }) =>
+    ({ nextX, nextY, minDuration, maxDuration, durationMultiplier }) =>
       new Promise((resolve) => {
         const cursor = document.getElementById("soc-role-demo-cursor");
         if (!cursor) {
@@ -351,7 +351,7 @@ async function glideCursorTo(page, x, y, options = {}) {
         const currentX = Number(cursor.dataset.x || 48);
         const currentY = Number(cursor.dataset.y || 48);
         const distance = Math.hypot(nextX - currentX, nextY - currentY);
-        const duration = Math.min(maxDuration, Math.max(minDuration, distance * 1.15));
+        const duration = Math.min(maxDuration, Math.max(minDuration, distance * 1.15 * durationMultiplier));
         const start = performance.now();
         const ease = (value) => 1 - Math.pow(1 - value, 3);
         function frame(now) {
@@ -367,7 +367,7 @@ async function glideCursorTo(page, x, y, options = {}) {
         }
         requestAnimationFrame(frame);
       }),
-    { nextX: x, nextY: y, minDuration: scaled(320), maxDuration: scaled(900), ...options },
+    { nextX: x, nextY: y, minDuration: scaled(320), maxDuration: scaled(900), durationMultiplier: multiplier, ...options },
   );
   await page.mouse.move(x, y).catch(() => undefined);
 }
@@ -380,7 +380,7 @@ async function locatorCenter(locator) {
 
 async function smoothScrollToY(page, targetY) {
   await page.evaluate(
-    ({ nextY, minDuration, maxDuration }) =>
+    ({ nextY, minDuration, maxDuration, durationMultiplier }) =>
       new Promise((resolve) => {
         const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
         const startY = window.scrollY || document.documentElement.scrollTop || 0;
@@ -390,7 +390,7 @@ async function smoothScrollToY(page, targetY) {
           resolve();
           return;
         }
-        const duration = Math.min(maxDuration, Math.max(minDuration, Math.abs(distance) * 0.48));
+        const duration = Math.min(maxDuration, Math.max(minDuration, Math.abs(distance) * 0.48 * durationMultiplier));
         const start = performance.now();
         const ease = (value) => 1 - Math.pow(1 - value, 3);
         function frame(now) {
@@ -401,7 +401,7 @@ async function smoothScrollToY(page, targetY) {
         }
         requestAnimationFrame(frame);
       }),
-    { nextY: targetY, minDuration: scaled(timing.scrollMin), maxDuration: scaled(timing.scrollMax) },
+    { nextY: targetY, minDuration: scaled(timing.scrollMin), maxDuration: scaled(timing.scrollMax), durationMultiplier: multiplier },
   );
 }
 
@@ -454,9 +454,50 @@ async function clickWithCursor(page, locator, caption, options = {}) {
 }
 
 async function fillWithCursor(page, locator, value) {
-  await smoothScrollToLocator(page, locator);
-  await locator.first().fill(value);
+  const target = locator.first();
+  await smoothScrollToLocator(page, target);
+  const center = await locatorCenter(target);
+  if (center) await glideCursorTo(page, center.x, center.y);
+  await pause(page, timing.hover);
+  await page.evaluate(() => document.getElementById("soc-role-demo-cursor")?.classList.add("clicking"));
+  await target.click({ timeout: 2500 });
+  await pause(page, 120);
+  await page.evaluate(() => document.getElementById("soc-role-demo-cursor")?.classList.remove("clicking"));
+  await target.fill(value);
   await pause(page, timing.click);
+}
+
+async function pointAtControl(page, locator) {
+  const target = locator.first();
+  if (!(await target.count().catch(() => 0))) return false;
+  if (!(await target.isVisible().catch(() => false))) return false;
+  await smoothScrollToLocator(page, target);
+  const center = await locatorCenter(target);
+  if (center) await glideCursorTo(page, center.x, center.y);
+  await pause(page, timing.hover);
+  return true;
+}
+
+async function pointAtIncidentFilters(page, role) {
+  await runDemoStep(page, "Incidents can be filtered by archive scope, severity, date, search text, and status.", async () => {
+    await smoothScrollToY(page, 0);
+    await pointAtControl(page, page.getByRole("heading", { name: /^Incidents$/i }));
+    const filterPanel = page.locator(".filter-panel").first();
+    if (await filterPanel.count().catch(() => 0)) {
+      await smoothScrollToLocator(page, filterPanel);
+    }
+    const controls = [
+      page.getByLabel("Archive scope"),
+      page.getByLabel("Severity"),
+      page.getByLabel("Search incidents"),
+    ];
+    if (/super admin/i.test(role)) {
+      controls.push(page.getByLabel("Status"), page.getByLabel("Date scope"));
+    }
+    for (const control of controls) {
+      await pointAtControl(page, control);
+    }
+  }, { importance: /super admin/i.test(role) ? "important" : "normal" });
 }
 
 async function scrollToText(page, text, caption) {
@@ -482,6 +523,73 @@ async function goto(page, pathname, caption) {
     await pauseForActionSettle(page);
   }
   await pause(page, (timing.pageMin + timing.pageMax) / 2);
+}
+
+async function waitForRoute(page, pathname) {
+  if (!pathname) {
+    await waitForPage(page);
+    return;
+  }
+  await page
+    .waitForFunction((nextPath) => window.location.pathname === nextPath, pathname, { timeout: 8000 })
+    .catch(() => undefined);
+  await waitForPage(page);
+  await ensureTheme(page, rolesTheme);
+}
+
+async function visibleNavLink(page, labelOrRegex) {
+  const candidates = Array.isArray(labelOrRegex) ? labelOrRegex : [labelOrRegex];
+  for (const name of candidates) {
+    const links = page.getByRole("link", { name });
+    const count = await links.count().catch(() => 0);
+    for (let index = 0; index < count; index += 1) {
+      const link = links.nth(index);
+      if (await link.isVisible().catch(() => false)) {
+        return link;
+      }
+    }
+  }
+  return null;
+}
+
+async function visiblePageLinkByHref(page, href) {
+  const links = page.locator(`a[href="${href}"]`);
+  const count = await links.count().catch(() => 0);
+  for (let index = 0; index < count; index += 1) {
+    const link = links.nth(index);
+    if (await link.isVisible().catch(() => false)) {
+      return link;
+    }
+  }
+  return null;
+}
+
+async function navigateByVisibleNav(page, labelOrRegex, fallbackPath, caption, options = {}) {
+  const link = await visibleNavLink(page, labelOrRegex);
+  if (link) {
+    await clickWithCursor(page, link, caption, { importance: options.importance || "important" });
+    await waitForRoute(page, fallbackPath);
+    return true;
+  }
+  let pageLink = await visiblePageLinkByHref(page, fallbackPath);
+  if (!pageLink && fallbackPath.startsWith("/analytics/")) {
+    const dashboardLink = await visibleNavLink(page, /Dashboard/i);
+    const currentPath = await page.evaluate(() => window.location.pathname).catch(() => "");
+    if (dashboardLink && currentPath !== "/dashboard") {
+      await clickWithCursor(page, dashboardLink, "Opening Dashboard to use the visible analytics shortcut.", { importance: "important" });
+      await waitForRoute(page, "/dashboard");
+    }
+    pageLink = await visiblePageLinkByHref(page, fallbackPath);
+  }
+  if (pageLink) {
+    console.log(`[INFO] Header nav link not found for ${fallbackPath}; using a visible page link instead.`);
+    await clickWithCursor(page, pageLink, caption, { importance: options.importance || "important" });
+    await waitForRoute(page, fallbackPath);
+    return true;
+  }
+  console.warn(`[WARN] Visible nav link not found for ${fallbackPath}; falling back to direct navigation.`);
+  await goto(page, fallbackPath, caption);
+  return false;
 }
 
 async function forceTheme(page, theme) {
@@ -671,12 +779,19 @@ async function openFirstIncident(page, context, role) {
     await showCaption(page, "No incidents are available in this lab database, so incident detail is skipped.");
     return null;
   }
-  await goto(page, `/incidents/${incident.id}`, `${role} opens an incident detail page.`);
+  const firstIncidentLink = page.locator("main a[href^='/incidents/']").first();
+  if (await firstIncidentLink.count().catch(() => 0)) {
+    await clickWithCursor(page, firstIncidentLink, `${role} opens an incident detail page.`);
+    await waitForRoute(page, `/incidents/${incident.id}`);
+  } else {
+    console.warn(`[WARN] Visible incident link not found; falling back to direct incident detail navigation.`);
+    await goto(page, `/incidents/${incident.id}`, `${role} opens an incident detail page.`);
+  }
   return incident;
 }
 
 async function demonstrateDashboard(page, role) {
-  await goto(page, "/dashboard", `${role} dashboard: incidents, alert events, and event-weighted analytics.`);
+  await navigateByVisibleNav(page, /Dashboard/i, "/dashboard", `${role} dashboard: incidents, alert events, and event-weighted analytics.`);
   await runDemoStep(page, "Total incidents counts stored cases; Total alert events counts correlated alert volume.", async () => {
     await smoothScrollBy(page, 420);
   });
@@ -688,7 +803,7 @@ async function demonstrateDashboard(page, role) {
 }
 
 async function demonstrateAnalytics(page) {
-  await goto(page, "/analytics/alerts", "Full alert timeline with range controls and drilldowns.");
+  await navigateByVisibleNav(page, /Alert Timeline/i, "/analytics/alerts", "Full alert timeline with range controls and drilldowns.");
   for (const range of ["24h", "7d", "1m", "1y"]) {
     await clickWithCursor(page, page.getByRole("button", { name: range }), `Timeline range: ${range}`);
   }
@@ -699,10 +814,10 @@ async function demonstrateAnalytics(page) {
     await runDemoStep(page, "Alert drilldowns expand the selected time bucket into matching events.", async () => {
       await smoothScrollBy(page, 900);
     });
-    await goto(page, "/analytics/alerts", "Back to the full timeline.");
+    await navigateByVisibleNav(page, /Alert Timeline/i, "/analytics/alerts", "Back to the full timeline.");
   }
 
-  await goto(page, "/analytics/mitre", "MITRE analytics shows complete event-weighted technique distribution.");
+  await navigateByVisibleNav(page, /MITRE/i, "/analytics/mitre", "MITRE analytics shows complete event-weighted technique distribution.");
   await runDemoStep(page, "The MITRE view keeps the complete technique distribution visible for review.", async () => {
     await smoothScrollBy(page, 760);
   });
@@ -714,10 +829,8 @@ async function demonstrateAnalytics(page) {
 }
 
 async function demonstrateIncidentDetail(page, context, role, readOnly = false) {
-  await goto(page, "/incidents", `${role} opens incidents with filters, archive scope, date scope, and progressive loading.`);
-  await clickWithCursor(page, page.getByLabel("Archive scope"), "Archive scope controls active, archived, or all incidents.");
-  await clickWithCursor(page, page.getByLabel("Severity"), "Severity and search filters narrow the queue.");
-  await clickWithCursor(page, page.getByLabel("Date scope"), "Date scope filters day, month, year, or all history.");
+  await navigateByVisibleNav(page, /Incidents/i, "/incidents", `${role} opens incidents with filters, archive scope, date scope, and progressive loading.`);
+  await pointAtIncidentFilters(page, role);
   await runDemoStep(page, "The incident queue uses progressive loading as the page scrolls.", async () => {
     await smoothScrollBy(page, 1400);
   }, { importance: "important" });
@@ -740,10 +853,10 @@ async function demonstrateIncidentDetail(page, context, role, readOnly = false) 
 }
 
 async function demonstrateAdminUsers(page, context) {
-  await goto(page, "/admin/users", "Super admin user management: RBAC, user creation, Save, reset, and disable controls.");
+  await navigateByVisibleNav(page, /^Users$/i, "/admin/users", "Super admin user management: RBAC, user creation, Save, reset, and disable controls.");
   await assert(await page.getByRole("button", { name: /create user/i }).isVisible(), "/admin/users did not load.");
   await createDisposableUsers(context, page);
-  await page.reload({ waitUntil: "domcontentloaded" });
+  await clickWithCursor(page, page.getByRole("button", { name: /refresh/i }), "Refreshing the user list to show the disposable demo accounts.");
   await waitForPage(page);
   await installVisualHelpers(page);
   await assert(await userRow(page, analystUsername).isVisible(), "Disposable analyst row missing.");
@@ -769,7 +882,7 @@ async function demonstrateAdminUsers(page, context) {
 }
 
 async function demonstrateAudit(page) {
-  await goto(page, "/admin/audit", "Audit review: login, user, permission, report, and response-action events.");
+  await navigateByVisibleNav(page, /^Audit$/i, "/admin/audit", "Audit review: login, user, permission, report, and response-action events.");
   await assert(await page.getByRole("heading", { name: /audit/i }).first().isVisible(), "/admin/audit did not load.");
   await scrollToText(page, "Audit Metrics", "Audit metrics summarize recent operational security activity.");
   await scrollToText(page, "Audit Events", "Audit events preserve what happened without leaking secrets.");
@@ -779,7 +892,7 @@ async function demonstrateAudit(page) {
 }
 
 async function demonstrateReport(page, role) {
-  await goto(page, "/report", `${role} report page.`);
+  await navigateByVisibleNav(page, /Report/i, "/report", `${role} report page.`);
   await assert(await page.getByRole("heading", { name: "Report", level: 1 }).isVisible(), "/report did not load.");
   if (role !== "super_admin" || !generateReport) {
     await info(role, role === "super_admin" ? "Report generation not run because DEMO_ROLES_GENERATE_REPORT=false." : "Report generation not run in this role video.");
@@ -799,10 +912,10 @@ async function demonstrateReport(page, role) {
 }
 
 async function finishRoleVideo(page, roleLabel) {
-  await goto(page, "/dashboard", `${roleLabel} returns to the dashboard to close the walkthrough.`);
+  await navigateByVisibleNav(page, /Dashboard/i, "/dashboard", `${roleLabel} returns to the dashboard to close the walkthrough.`);
   await ensureTheme(page, rolesTheme);
   await showCaption(page, finalCaption, { wait: false });
-  await page.waitForTimeout(Math.max(2200, scaled(finalCaptionMs)));
+  await page.waitForTimeout(Math.max(scaled(2200), scaled(finalCaptionMs)));
 }
 
 async function confirmForbidden(page, context, role, pathname, apiPath) {
@@ -810,9 +923,11 @@ async function confirmForbidden(page, context, role, pathname, apiPath) {
     await skip(role, pathname, "DEMO_ROLES_INCLUDE_FORBIDDEN_CHECKS=false.");
     return;
   }
+  await showCaption(page, "Admin navigation is hidden for this role.");
+  await pauseForActionSettle(page);
   const api = await apiFetch(context, apiPath);
   await assert(api.status === 403, `${role} ${apiPath} should return 403, got ${api.status}.`);
-  await goto(page, pathname, `${role} tries ${pathname}; backend RBAC blocks access.`);
+  await goto(page, pathname, "Direct access is also blocked by the backend.");
   const body = await page.locator("body").innerText().catch(() => "");
   await assert(/forbidden|cannot|unauthorized|required|login/i.test(body), `${role} forbidden page did not show an access-denied state.`);
 }

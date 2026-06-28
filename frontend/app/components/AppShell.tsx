@@ -7,6 +7,8 @@ import { AdminUser, hasPermission, logout } from "@/lib/api";
 
 const navItems = [
   { href: "/dashboard", label: "Dashboard", permission: "view_dashboard" },
+  { href: "/analytics/alerts", label: "Alert Timeline", permission: "view_dashboard" },
+  { href: "/analytics/mitre", label: "MITRE", permission: "view_dashboard" },
   { href: "/incidents", label: "Incidents", permission: "view_incidents" },
   { href: "/report", label: "Report", permission: "generate_report" },
 ];
