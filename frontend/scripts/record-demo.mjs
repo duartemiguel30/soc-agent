@@ -95,11 +95,17 @@ const baseUrl =
   "http://192.168.56.105:3000";
 const username = process.env.DEMO_ADMIN_USERNAME || "admin";
 const password = process.env.DEMO_ADMIN_PASSWORD || "admin";
-const headless = process.env.DEMO_HEADLESS ? process.env.DEMO_HEADLESS !== "false" : false;
+const externalRecordingMode = envBoolean("DEMO_EXTERNAL_RECORDING_MODE", false);
+const recordVideo = process.env.DEMO_RECORD_VIDEO === undefined || process.env.DEMO_RECORD_VIDEO === ""
+  ? !externalRecordingMode
+  : envBoolean("DEMO_RECORD_VIDEO", true);
+const fullscreen = envBoolean("DEMO_FULLSCREEN", false);
+const headless = externalRecordingMode ? false : process.env.DEMO_HEADLESS ? process.env.DEMO_HEADLESS !== "false" : false;
 const speedMultiplier = demoSpeedMultiplier();
 const slowMo = Math.round(envNumber("DEMO_SLOW_MO_MS", "120") * speedMultiplier);
 const videoWidth = envNumber("DEMO_VIDEO_WIDTH", "1920");
 const videoHeight = envNumber("DEMO_VIDEO_HEIGHT", "1080");
+const startDelayMs = envNumber("DEMO_START_DELAY_MS", "5000");
 const generateReportInDemo = process.env.DEMO_GENERATE_REPORT !== "false";
 const reportTimeoutMs = envNumber("DEMO_REPORT_TIMEOUT_MS", "90000");
 const demoStartTheme = process.env.DEMO_START_THEME || "light";
@@ -125,6 +131,14 @@ const timing = {
 };
 const toggleTheme = process.env.DEMO_TOGGLE_THEME === "true";
 let keepDarkTheme = false;
+let startDelayCompleted = false;
+
+function launchArgs() {
+  if (!fullscreen && !externalRecordingMode) {
+    return [];
+  }
+  return ["--start-fullscreen", `--window-size=${videoWidth},${videoHeight}`];
+}
 
 async function loadPlaywright() {
   try {
@@ -770,6 +784,28 @@ async function goto(page, pathname, caption) {
   await pauseForAction(page, "page");
 }
 
+async function waitForExternalRecordingStart(page) {
+  const startDelayConfigured = process.env.DEMO_START_DELAY_MS !== undefined && process.env.DEMO_START_DELAY_MS !== "";
+  if (startDelayCompleted || (!externalRecordingMode && !startDelayConfigured) || startDelayMs <= 0) {
+    return;
+  }
+  startDelayCompleted = true;
+  const seconds = Math.ceil(startDelayMs / 1000);
+  if (externalRecordingMode) {
+    console.log(`External recording mode: starting in ${seconds} seconds...`);
+  } else {
+    console.log(`Demo start delay: starting in ${seconds} seconds...`);
+  }
+  await page.waitForTimeout(startDelayMs);
+  await showCaption(
+    page,
+    externalRecordingMode ? "External recording mode: starting presentation" : "Starting presentation",
+    { wait: false },
+  );
+  await pauseForCaptionIntro(page);
+  await pauseForActionSettle(page, "normal");
+}
+
 async function waitForRoute(page, pathname) {
   if (!pathname) {
     await waitForPage(page);
@@ -905,7 +941,8 @@ async function clickFirstPositiveTimelineBucket(page) {
 }
 
 async function login(page) {
-  await goto(page, "/login", "SOC AI Agent Demo");
+  await goto(page, "/login", externalRecordingMode ? undefined : "SOC AI Agent Demo");
+  await waitForExternalRecordingStart(page);
   await fillWithDemoCursor(page, page.getByLabel("Username"), username, "Signing in to the admin console");
   await fillWithDemoCursor(page, page.getByLabel("Password"), password);
   await clickWithDemoCursor(page, page.getByRole("button", { name: /sign in/i }));
@@ -1115,24 +1152,29 @@ async function main() {
     return;
   }
   const { chromium } = playwright;
-  await fs.rm(tempVideoDir, { recursive: true, force: true });
-  await fs.rm(outputVideo, { force: true });
-  await fs.mkdir(tempVideoDir, { recursive: true });
+  if (recordVideo) {
+    await fs.rm(tempVideoDir, { recursive: true, force: true });
+    await fs.rm(outputVideo, { force: true });
+    await fs.mkdir(tempVideoDir, { recursive: true });
+  }
 
-  const browser = await chromium.launch({ headless, slowMo });
+  const browser = await chromium.launch({ headless, slowMo, args: launchArgs() });
   let context;
   let page;
   let flowError;
   let saveError;
 
   try {
-    context = await browser.newContext({
+    const contextOptions = {
       viewport: { width: videoWidth, height: videoHeight },
-      recordVideo: {
+    };
+    if (recordVideo) {
+      contextOptions.recordVideo = {
         dir: tempVideoDir,
         size: { width: videoWidth, height: videoHeight },
-      },
-    });
+      };
+    }
+    context = await browser.newContext(contextOptions);
     await setInitialTheme(context, demoStartTheme);
     page = await context.newPage();
     await login(page);
@@ -1158,7 +1200,7 @@ async function main() {
       console.error("Could not close Playwright context cleanly:", error);
     }
     try {
-      if (page) {
+      if (recordVideo && page) {
         await saveRecordedVideo(page);
       }
     } catch (error) {
@@ -1168,7 +1210,13 @@ async function main() {
     await browser.close().catch((error) => console.error("Could not close browser cleanly:", error));
   }
 
-  if (!saveError) {
+  if (!recordVideo) {
+    if (externalRecordingMode) {
+      console.log("External recording mode enabled; no Playwright video was saved.");
+    } else {
+      console.log("Playwright video recording disabled; no Playwright video was saved.");
+    }
+  } else if (!saveError) {
     console.log(`Demo video saved to: ${outputVideo}`);
     console.log("High-quality 4K MP4 conversion:");
     console.log(
@@ -1178,9 +1226,9 @@ async function main() {
     console.log(
       `ffmpeg -y -i "${outputVideo}" -c:v libx264 -crf 23 -preset medium -pix_fmt yuv420p "${path.join(outputDir, "soc-ai-agent-demo.mp4")}"`,
     );
-    console.log("Safety reminder: this demo script is read-only for incident data.");
-    console.log("No incidents were approved, rejected, archived, unarchived, or executed by this script.");
   }
+  console.log("Safety reminder: this demo script is read-only for incident data.");
+  console.log("No incidents were approved, rejected, archived, unarchived, or executed by this script.");
   if (flowError || saveError) {
     process.exitCode = 1;
   }

@@ -75,11 +75,17 @@ const frontendUrl =
   "http://192.168.56.105:3000";
 const adminUsername = process.env.DEMO_ADMIN_USERNAME || "admin";
 const adminPassword = process.env.DEMO_ADMIN_PASSWORD || "admin";
-const headless = envBoolean("DEMO_HEADLESS", false);
+const externalRecordingMode = envBoolean("DEMO_EXTERNAL_RECORDING_MODE", false);
+const recordVideo = process.env.DEMO_RECORD_VIDEO === undefined || process.env.DEMO_RECORD_VIDEO === ""
+  ? !externalRecordingMode
+  : envBoolean("DEMO_RECORD_VIDEO", true);
+const fullscreen = envBoolean("DEMO_FULLSCREEN", false);
+const headless = externalRecordingMode ? false : envBoolean("DEMO_HEADLESS", false);
 const multiplier = speedMultiplier();
 const videoWidth = envNumber("DEMO_VIDEO_WIDTH", 1920);
 const videoHeight = envNumber("DEMO_VIDEO_HEIGHT", 1080);
 const slowMo = Math.round(envNumber("DEMO_SLOW_MO_MS", 80) * multiplier);
+const startDelayMs = envNumber("DEMO_START_DELAY_MS", 5000);
 const outputDir = path.resolve(repoRoot, process.env.DEMO_ROLES_OUTPUT_DIR || "demo-output/roles");
 const resultsPath = path.join(outputDir, "role-demo-results.json");
 const screenshotsDir = path.join(outputDir, "screenshots");
@@ -119,6 +125,14 @@ const createdUsers = [];
 const videos = {};
 let failureCount = 0;
 let activePage = null;
+let startDelayCompleted = false;
+
+function launchArgs() {
+  if (!fullscreen && !externalRecordingMode) {
+    return [];
+  }
+  return ["--start-fullscreen", `--window-size=${videoWidth},${videoHeight}`];
+}
 
 async function loadPlaywright() {
   try {
@@ -622,10 +636,13 @@ async function ensureTheme(page, theme) {
 
 async function createRecordedContext(browser, videoFile) {
   await fs.mkdir(outputDir, { recursive: true });
-  const context = await browser.newContext({
+  const contextOptions = {
     viewport: { width: videoWidth, height: videoHeight },
-    recordVideo: { dir: outputDir, size: { width: videoWidth, height: videoHeight } },
-  });
+  };
+  if (recordVideo) {
+    contextOptions.recordVideo = { dir: outputDir, size: { width: videoWidth, height: videoHeight } };
+  }
+  const context = await browser.newContext(contextOptions);
   await context.addInitScript((theme) => {
     try {
       const themeToApply = theme === "light" ? "light" : "dark";
@@ -651,9 +668,12 @@ async function createRecordedContext(browser, videoFile) {
 }
 
 async function closeRecordedContext(recording, key) {
-  const video = recording.page.video();
+  const video = recordVideo ? recording.page.video() : null;
   await recording.context.close();
-  if (!video) return null;
+  if (!video) {
+    videos[key] = null;
+    return null;
+  }
   const source = await video.path();
   const target = path.join(outputDir, recording.videoFile);
   await fs.copyFile(source, target);
@@ -688,8 +708,31 @@ async function apiFetch(contextOrPage, requestPath, options = {}) {
   return { status: response.status(), ok: response.ok(), text, data };
 }
 
+async function waitForExternalRecordingStart(page) {
+  const startDelayConfigured = process.env.DEMO_START_DELAY_MS !== undefined && process.env.DEMO_START_DELAY_MS !== "";
+  if (startDelayCompleted || (!externalRecordingMode && !startDelayConfigured) || startDelayMs <= 0) {
+    return;
+  }
+  startDelayCompleted = true;
+  const seconds = Math.ceil(startDelayMs / 1000);
+  if (externalRecordingMode) {
+    console.log(`External recording mode: starting in ${seconds} seconds...`);
+  } else {
+    console.log(`Demo start delay: starting in ${seconds} seconds...`);
+  }
+  await page.waitForTimeout(startDelayMs);
+  await showCaption(
+    page,
+    externalRecordingMode ? "External recording mode: starting presentation" : "Starting presentation",
+    { wait: false },
+  );
+  await pauseForCaptionIntro(page);
+  await pauseForActionSettle(page);
+}
+
 async function loginAs(page, username, password, roleLabel) {
   await goto(page, "/login");
+  await waitForExternalRecordingStart(page);
   await fillWithCursor(page, page.getByLabel("Username"), username);
   await fillWithCursor(page, page.getByLabel("Password"), password);
   await clickWithCursor(page, page.getByRole("button", { name: /sign in/i }), `${roleLabel} signs in with an HttpOnly session cookie.`);
@@ -1040,13 +1083,24 @@ async function cleanupUsers(browser) {
 async function main() {
   await fs.mkdir(outputDir, { recursive: true });
   await fs.mkdir(screenshotsDir, { recursive: true });
-  for (const fileName of ["role-super-admin.webm", "role-analyst.webm", "role-viewer.webm", "role-demo-results.json"]) {
+  const staleFiles = recordVideo
+    ? ["role-super-admin.webm", "role-analyst.webm", "role-viewer.webm", "role-demo-results.json"]
+    : ["role-demo-results.json"];
+  for (const fileName of staleFiles) {
     await fs.rm(path.join(outputDir, fileName), { force: true });
   }
   await info("setup", `Role demo frontend URL: ${frontendUrl}`);
   await info("setup", `Role demo output dir: ${outputDir}`);
+  if (!recordVideo) {
+    await info(
+      "setup",
+      externalRecordingMode
+        ? "External recording mode enabled; no Playwright role videos will be saved."
+        : "Playwright role video recording disabled; no Playwright role videos will be saved.",
+    );
+  }
   const { chromium } = await loadPlaywright();
-  const browser = await chromium.launch({ headless, slowMo });
+  const browser = await chromium.launch({ headless, slowMo, args: launchArgs() });
   try {
     await recordSuperAdmin(browser);
     await recordAnalyst(browser);
@@ -1055,6 +1109,13 @@ async function main() {
     await cleanupUsers(browser).catch(async (error) => fail("cleanup", "Cleanup crashed", error));
     await browser.close().catch(() => undefined);
     await writeResults();
+    if (!recordVideo) {
+      if (externalRecordingMode) {
+        console.log("External recording mode enabled; no Playwright video was saved.");
+      } else {
+        console.log("Playwright video recording disabled; no Playwright video was saved.");
+      }
+    }
   }
   process.exitCode = failureCount > 0 ? 1 : 0;
 }
