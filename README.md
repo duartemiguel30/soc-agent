@@ -42,7 +42,7 @@ This project is intentionally conservative.
 - Destructive actions require explicit configuration and still enforce per-action safeguards.
 - `/report` is read-only and does not write incident history.
 
-Do not commit `.env`, `incidents.db`, `venv/`, `__pycache__/`, `.next/`, `node_modules/`, API keys, cookies, session tokens, password hashes, passwords, AD credentials, or other secrets.
+Do not commit `.env`, `.env.demo`, `.env.smoke`, `.env.tests`, `incidents.db`, `venv/`, `__pycache__/`, `.next/`, `node_modules/`, `demo-output/`, `smoke-output/`, `tests-output/`, generated videos/screenshots, API keys, cookies, session tokens, password hashes, passwords, AD credentials, command templates containing credentials, or other secrets.
 
 ## Backend Configuration
 
@@ -262,7 +262,7 @@ Automated actor is `system:auto_response`. Automated dry-runs, executions, unava
 
 - Risk: medium.
 - Requires `src_ip`.
-- Dry-run shows the iptables DROP command.
+- Dry-run shows the intended target and safe action summary, not a persisted raw shell command.
 - Execute validates the IP, rejects loopback/multicast/unspecified addresses, checks whether the rule already exists, and fails clearly if the host is not Linux or `iptables` is unavailable.
 
 ### `disable_ad_account`
@@ -283,7 +283,7 @@ High-risk AD dry-run confirmation request body:
 { "confirm": "DISABLE_ACCOUNT", "reason": "Analyst-approved containment rationale" }
 ```
 
-Username safety checks reject unsupported characters, machine accounts, protected usernames such as `Administrator`, `admin`, `krbtgt`, `vagrant`, admin-like names, and additional entries in `AD_PROTECTED_USERS`.
+Username safety checks reject unsupported characters, machine accounts, protected usernames such as `Administrator`, `admin`, `krbtgt`, `vagrant`, admin-like names, and additional entries in `AD_PROTECTED_USERS`. Real LDAP execution also blocks accounts with privileged `memberOf` groups, `adminCount=1`, or protected primary group RIDs such as Domain Admins, Enterprise Admins, Schema Admins, Administrators, Account Operators, Server Operators, Print Operators, and Backup Operators.
 
 LDAP bind failures are reported generically. Bind passwords and command credentials must not be logged or committed.
 
@@ -296,7 +296,7 @@ LDAP bind failures are reported generically. Bind passwords and command credenti
 - Execute mode requires `ENDPOINT_ISOLATION_COMMAND_TEMPLATE`.
 - Protected hosts/IPs in `ENDPOINT_ISOLATION_PROTECTED_HOSTS` cannot be isolated.
 - Command templates support `{host}`, `{agent}`, `{agent_ip}`, and `{incident_id}` placeholders.
-- Commands run with `ENDPOINT_ISOLATION_TIMEOUT_SECONDS` and stdout/stderr are truncated before returning.
+- Commands run with `ENDPOINT_ISOLATION_TIMEOUT_SECONDS`; raw rendered commands and stdout/stderr contents are not returned or persisted. Results keep safe fields such as status, return code, and output-present/truncated flags.
 
 No destructive command is hardcoded. The command template must be supplied explicitly in local runtime configuration.
 
@@ -307,7 +307,7 @@ No destructive command is hardcoded. The command template must be supplied expli
 - Disabled by default with `HOST_CONTEXT_COLLECTION_ENABLED=false`.
 - Dry-run by default with `HOST_CONTEXT_COLLECTION_MODE=dry_run`.
 - Execute mode requires `HOST_CONTEXT_COMMAND_TEMPLATE`.
-- Uses the same `{host}`, `{agent}`, `{agent_ip}`, and `{incident_id}` placeholders and timeout pattern.
+- Uses the same `{host}`, `{agent}`, `{agent_ip}`, and `{incident_id}` placeholders and timeout pattern. Raw rendered commands and command output are not stored in admin audit or incident action history.
 - Intended for non-destructive collection or demo-safe simulation.
 
 ## Manual Playbooks, Notes, Timeline, And Archive
@@ -460,7 +460,7 @@ The frontend uses FastAPI's HttpOnly cookie through `/backend/*`. It uses `local
 
 ## Automated Demo Recording
 
-The frontend includes a Playwright-based demo recorder for polished presentation-style videos. It navigates the admin console, injects temporary on-screen captions and a fake cursor, uses smooth human-like scrolling, and records a browser video without changing production app behavior or storing auth tokens in browser storage. The demo is read-only for incident data.
+The frontend includes Playwright-based demo recorders for polished presentation-style videos. They navigate the admin console through visible UI/header links where possible, inject temporary on-screen captions and a fake default mouse cursor, use smooth human-like scrolling, and record browser videos without changing production app behavior or storing auth tokens in browser storage. The main demo is read-only for incident data.
 
 Prerequisites:
 
@@ -477,41 +477,45 @@ DEMO_ADMIN_USERNAME=admin DEMO_ADMIN_PASSWORD=admin npm run demo:record
 
 The recorder automatically loads demo environment variables from `frontend/.env.demo`, then falls back to `.env.demo` in the repository root. Shell environment variables take precedence over values in `.env.demo`, so one-off overrides can be passed inline. To use a custom file, set `DEMO_ENV_FILE=/custom/path/.env.demo`.
 
-Example `frontend/.env.demo` for faster 1080p local testing:
+Example `frontend/.env.demo` for faster 2K presentation recording:
 
 ```env
 #### video record ####
 DEMO_FRONTEND_URL=http://192.168.56.105:3000
 DEMO_HEADLESS=false
+DEMO_EXTERNAL_RECORDING_MODE=false
+DEMO_RECORD_VIDEO=true
+DEMO_FULLSCREEN=false
+DEMO_START_DELAY_MS=5000
 
-## 1080 ##
-DEMO_VIDEO_WIDTH=1920
-DEMO_VIDEO_HEIGHT=1080
-DEMO_SPEED=fast
-DEMO_CAPTION_MIN_MS=850
-DEMO_CAPTION_MAX_MS=2100
-DEMO_CAPTION_PER_CHAR_MS=20
-DEMO_CAPTION_INTRO_MS=250
-DEMO_STEP_SETTLE_MS=550
-DEMO_IMPORTANT_STEP_SETTLE_MS=900
-DEMO_PAGE_MIN_MS=700
-DEMO_PAGE_MAX_MS=1500
-DEMO_CLICK_PAUSE_MS=380
-DEMO_HOVER_PAUSE_MS=220
-DEMO_FILTER_PAUSE_MS=500
-DEMO_RANGE_PAUSE_MS=520
-DEMO_SECTION_PAUSE_MS=700
-DEMO_SCROLL_MIN_MS=380
-DEMO_SCROLL_MAX_MS=1000
-DEMO_SLOW_MO_MS=220
+DEMO_SPEED=normal
+DEMO_SPEED_MULTIPLIER=0.8
+
+DEMO_VIDEO_WIDTH=2560
+DEMO_VIDEO_HEIGHT=1440
+
+DEMO_CAPTION_MIN_MS=1000
+DEMO_CAPTION_MAX_MS=3000
+DEMO_CAPTION_PER_CHAR_MS=25
+
+DEMO_PAGE_MIN_MS=1000
+DEMO_PAGE_MAX_MS=2500
+
+DEMO_CLICK_PAUSE_MS=500
+DEMO_HOVER_PAUSE_MS=400
+DEMO_FILTER_PAUSE_MS=800
+DEMO_RANGE_PAUSE_MS=800
+DEMO_SECTION_PAUSE_MS=1000
+
+DEMO_SCROLL_MIN_MS=600
+DEMO_SCROLL_MAX_MS=1500
+
 DEMO_GENERATE_REPORT=true
 DEMO_REPORT_TIMEOUT_MS=90000
-DEMO_FINAL_CAPTION=Hope you enjoyed the presentation
-DEMO_FINAL_CAPTION_MS=2600
+
 DEMO_START_THEME=light
 DEMO_SWITCH_TO_DARK_AFTER_LOGIN=true
 DEMO_ROLES_THEME=dark
-DEMO_ROLES_GENERATE_REPORT=false
 ```
 
 Example 4K presentation block:
@@ -530,10 +534,14 @@ Optional variables:
 - `DEMO_ADMIN_USERNAME`: defaults to `admin` for local demo convenience.
 - `DEMO_ADMIN_PASSWORD`: defaults to `admin` for local demo convenience.
 - `DEMO_HEADLESS`: defaults to `false` for visible local recording; set `DEMO_HEADLESS=true` for headless runs.
+- `DEMO_EXTERNAL_RECORDING_MODE`: defaults to `false`; when `true`, launches headed/fullscreen-friendly and defaults Playwright video recording off.
+- `DEMO_RECORD_VIDEO`: defaults to `true` normally and `false` in external recording mode unless explicitly set.
+- `DEMO_FULLSCREEN`: defaults to `false`; when `true`, launches Chromium with fullscreen-friendly window arguments.
+- `DEMO_START_DELAY_MS`: defaults to `5000`; used before visible demo actions in external recording mode or when explicitly set.
 - `DEMO_VIDEO_WIDTH`: defaults to `1920`.
 - `DEMO_VIDEO_HEIGHT`: defaults to `1080`.
 - `DEMO_SPEED`: supports `slow`, `normal`, or `fast`; defaults to `normal`.
-- `DEMO_SPEED_MULTIPLIER`: optional numeric multiplier such as `0.85`; overrides `DEMO_SPEED`.
+- `DEMO_SPEED_MULTIPLIER`: optional numeric multiplier such as `0.8`; when set, it takes precedence over `DEMO_SPEED` and scales captions, pauses, cursor glide, scrolling, and slow-mo timing.
 - `DEMO_SLOW_MO_MS`: defaults to `120`.
 - `DEMO_CAPTION_MIN_MS`: defaults to `1400`.
 - `DEMO_CAPTION_MAX_MS`: defaults to `3200`.
@@ -555,6 +563,12 @@ Optional variables:
 - `DEMO_START_THEME`: defaults to `light`; the main demo opens login/dashboard in light mode.
 - `DEMO_SWITCH_TO_DARK_AFTER_LOGIN`: defaults to `true`; the main demo visibly switches to dark mode after login and stays dark.
 - `DEMO_ROLES_THEME`: defaults to `dark`; role-based demo videos start and stay dark.
+- `DEMO_ROLES_OUTPUT_DIR`: defaults to `demo-output/roles`; destination for role-based videos and result JSON.
+- `DEMO_ROLES_CREATE_USERS`: defaults to `true`; creates disposable analyst/viewer demo users for role walkthroughs.
+- `DEMO_ROLES_DISABLE_CREATED_USERS`: defaults to `true`; disables disposable role demo users during cleanup.
+- `DEMO_ROLES_GENERATE_REPORT`: defaults to `false`; role videos open `/report` but avoid repeated AI report generation unless enabled.
+- `DEMO_ROLES_INCLUDE_ADMIN_USER_CREATION`: defaults to `true`; super-admin video demonstrates safe user creation/update/reset behavior.
+- `DEMO_ROLES_INCLUDE_FORBIDDEN_CHECKS`: defaults to `true`; analyst/viewer videos show forbidden admin areas or backend denial checks cleanly.
 - `DEMO_FINAL_CAPTION`: defaults to `Hope you enjoyed the presentation`.
 - `DEMO_FINAL_CAPTION_MS`: defaults to `2600`; controls the closing caption hold.
 - `DEMO_ENV_FILE`: optional path to a specific demo env file.
@@ -571,17 +585,36 @@ For final 4K recording, keep the same pacing and only override output size/headl
 DEMO_VIDEO_WIDTH=3840 DEMO_VIDEO_HEIGHT=2160 DEMO_HEADLESS=true DEMO_ADMIN_USERNAME=admin DEMO_ADMIN_PASSWORD=admin npm run demo:record
 ```
 
-The output video is saved at:
+### OBS / External Recording
+
+Playwright's internal `recordVideo` output is convenient, but bitrate/FPS control is limited. For highest quality, let Playwright control the browser while OBS, NVIDIA, or Windows capture records the fullscreen browser at 1440p/4K, 60 FPS, and a high bitrate.
+
+Recommended `.env.demo` overrides:
+
+```env
+DEMO_EXTERNAL_RECORDING_MODE=true
+DEMO_RECORD_VIDEO=false
+DEMO_FULLSCREEN=true
+DEMO_HEADLESS=false
+DEMO_VIDEO_WIDTH=2560
+DEMO_VIDEO_HEIGHT=1440
+DEMO_START_DELAY_MS=5000
+```
+
+With `DEMO_RECORD_VIDEO=false`, the demo still runs with the injected cursor, captions, and smooth scrolling, but no Playwright `.webm` is saved. The role recorder still writes `demo-output/roles/role-demo-results.json`.
+
+In normal Playwright recording mode, the output video is saved at:
 
 ```text
 demo-output/soc-ai-agent-demo.webm
 ```
 
-Optional high-quality 4K MP4 conversion if `ffmpeg` is installed:
+Optional very high-quality MP4 conversion if `ffmpeg` is installed:
 
 ```bash
 ffmpeg -y -i demo-output/soc-ai-agent-demo.webm \
-  -c:v libx264 -crf 18 -preset slow -pix_fmt yuv420p \
+  -c:v libx264 -preset slow -crf 14 -pix_fmt yuv420p -movflags +faststart \
+  -c:a aac -b:a 192k \
   demo-output/soc-ai-agent-demo-4k.mp4
 ```
 
@@ -589,11 +622,12 @@ Faster test conversion:
 
 ```bash
 ffmpeg -y -i demo-output/soc-ai-agent-demo.webm \
-  -c:v libx264 -crf 23 -preset medium -pix_fmt yuv420p \
+  -c:v libx264 -crf 23 -preset medium -pix_fmt yuv420p -movflags +faststart \
+  -c:a aac -b:a 160k \
   demo-output/soc-ai-agent-demo.mp4
 ```
 
-The demo covers dashboard metrics, Alert/Event Evolution, alert timeline drilldowns, MITRE analytics, incident filters and progressive loading, incident detail sections, response-action availability, and `/report`. On `/report`, it clicks `Generate report` by default and waits for the read-only generated executive summary to appear. This may call Gemini or another upstream AI service and can take time. The main demo starts in light mode, visibly switches to dark mode after login, then remains dark. Captions are synchronized with the visible cursor, click, scroll, and navigation actions, and the demo returns to the dashboard for a closing caption before recording ends. The injected cursor exists only during recording.
+The demo covers dashboard metrics, Alert/Event Evolution, alert timeline drilldowns, MITRE analytics, incident filters and progressive loading, incident detail sections, response-action availability, admin users, admin audit, and `/report`. Normal app navigation is recorded through visible header/navigation clicks rather than invisible URL jumps. On `/report`, it clicks `Generate report` by default and waits for the read-only generated executive summary to appear. This may call Gemini or another upstream AI service and can take time. The main demo starts in light mode, visibly switches to dark mode after login, then remains dark without intentional refreshes or light-mode flicker. Captions are synchronized with the visible cursor, click, scroll, and navigation actions, and the demo returns to the dashboard for a closing caption before recording ends. The injected cursor exists only during recording.
 
 The demo flow opens pages, changes read-only filters, scrolls, opens drilldowns, opens an incident detail, and generates the read-only report; it does not approve, reject, archive, unarchive, execute response actions, create notes, update playbook steps, or create playbooks.
 
@@ -606,7 +640,16 @@ cd frontend
 npm run demo:roles:video
 ```
 
-This uses `.env.demo`, generates one video each for super-admin/admin, analyst, and viewer under `demo-output/roles/`, and stays separate from `npm run demo:record`. Role videos start and stay in dark mode, open the report page without generating repeated reports by default, return to the dashboard, and end with the closing caption. They are safe by default: they do not execute destructive response actions, do not approve/reject/archive incidents, and create disposable analyst/viewer demo users only when configured, disabling them during cleanup.
+This uses `.env.demo`, generates one video each for super-admin/admin, analyst, and viewer under `demo-output/roles/`, and stays separate from `npm run demo:record`. Role videos start and stay in dark mode, navigate through visible header/menu links where available, open the report page without generating repeated reports by default, return to the dashboard, and end with the closing caption. They are safe by default: they do not execute destructive response actions, do not approve/reject/archive incidents, and create disposable analyst/viewer demo users only when configured, disabling them during cleanup.
+
+Expected role demo outputs:
+
+```text
+demo-output/roles/role-super-admin.webm
+demo-output/roles/role-analyst.webm
+demo-output/roles/role-viewer.webm
+demo-output/roles/role-demo-results.json
+```
 
 ## Visual Role Test Recordings
 
@@ -664,8 +707,9 @@ Manual correlation checks on the logger VM:
 
 ## Security Checklist
 
-- Keep `.env` and `incidents.db` local.
+- Keep `.env`, `.env.demo`, `.env.smoke`, `.env.tests`, and `incidents.db` local.
 - Do not commit secrets, hashes, cookies, session tokens, or AD credentials.
+- Keep generated videos/screenshots/results under `demo-output/`, `smoke-output/`, and `tests-output/` out of Git.
 - Keep `AUTO_RESPONSE_ACTIONS_ENABLED=false` unless intentionally testing policy-gated automation.
 - Keep `AUTO_RESPONSE_ACTION_MODE=dry_run` for demos.
 - Keep `AD_ACTIONS_ENABLED=false` unless intentionally testing the AD workflow.

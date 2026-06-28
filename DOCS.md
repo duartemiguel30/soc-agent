@@ -41,8 +41,10 @@ Frontend files:
 - `frontend/app/components/`: shared UI shell, auth guard, incident list, analytics widgets.
 - `frontend/lib/api.ts`: browser API client using `/backend/*` proxy routes and HttpOnly cookies.
 - `frontend/lib/analytics.ts`, `frontend/lib/incidents.ts`: frontend data shaping helpers.
-- `frontend/scripts/record-demo.mjs`: Playwright demo video recorder.
+- `frontend/scripts/record-demo.mjs`: Playwright main product demo video recorder.
+- `frontend/scripts/record-role-demo-videos.mjs`: Playwright role-based demo recorder that generates one walkthrough per role.
 - `frontend/scripts/smoke-admin-rbac-response-actions.mjs`: Playwright admin/RBAC/response-action smoke test.
+- `frontend/scripts/record-role-test-videos.mjs`: optional visual role-test recorder when present.
 - `frontend/next.config.ts`: Next.js config, including backend proxy behavior.
 
 Important local-only files:
@@ -51,7 +53,8 @@ Important local-only files:
 - `frontend/.env`: frontend runtime config, never commit.
 - `incidents.db`: local SQLite runtime data, never commit.
 - `venv/`, `frontend/node_modules/`, `frontend/.next/`: generated dependencies/build output, never commit.
-- `demo-output/`, `smoke-output/`: generated videos/test output, never commit.
+- `.env.demo`, `.env.smoke`, `.env.tests`: local Playwright/demo/test config, never commit.
+- `demo-output/`, `smoke-output/`, `tests-output/`: generated videos/test output, never commit.
 
 ## 3. Runtime Architecture
 
@@ -281,11 +284,11 @@ Safety rules:
 - High-risk actions require confirmation text and a reason.
 - Backend RBAC enforces execution permissions.
 - Audit events are created for dry-runs, confirmed dry-runs, executions, failures, and denials.
-- Raw secrets must never be returned or logged.
+- Raw secrets, rendered command strings, stdout, and stderr must never be persisted in admin audit or incident action history.
 
 ### `block_source_ip`
 
-Requires `src_ip`. Dry-run shows intended behavior. Execute validates the target IP and checks platform/tool availability.
+Requires `src_ip`. Dry-run shows intended target/action status without persisting raw shell commands. Execute validates the target IP and checks platform/tool availability.
 
 ### `disable_ad_account`
 
@@ -299,15 +302,15 @@ Real execution requires:
 - optional `ldap3` package
 - non-protected target username
 
-Protected accounts and admin-like names are rejected. Bind passwords belong only in local `.env`.
+Protected accounts and admin-like names are rejected. Real LDAP execution also blocks privileged AD metadata such as protected `memberOf` groups, `adminCount=1`, and protected primary group RIDs. Bind passwords belong only in local `.env`.
 
 ### `isolate_endpoint`
 
-Requires a host, agent, or IP observable. Disabled and dry-run by default. Real execution requires an explicit command template and protected-host safeguards.
+Requires a host, agent, or IP observable. Disabled and dry-run by default. Real execution requires an explicit command template and protected-host safeguards. Rendered command strings and stdout/stderr contents are not returned or persisted.
 
 ### `collect_host_context`
 
-Requires a host, agent, or IP observable. Intended for non-destructive collection or demo-safe simulation. Disabled and dry-run by default unless intentionally configured.
+Requires a host, agent, or IP observable. Intended for non-destructive collection or demo-safe simulation. Disabled and dry-run by default unless intentionally configured. Rendered command strings and stdout/stderr contents are not returned or persisted.
 
 ## 13. Automatic Response Policy
 
@@ -529,24 +532,58 @@ It does not execute response actions. It writes JSON results and failure screens
 
 ## 21. Demo Recording
 
-The demo recorder is:
+The frontend includes Playwright demo tooling for presentation and validation.
+
+Main demo:
 
 ```bash
 cd frontend
 npm run demo:record
 ```
 
-It uses Playwright to record a guided browser flow. It loads demo environment variables from `frontend/.env.demo`, then `.env.demo`, unless overridden by shell variables or `DEMO_ENV_FILE`.
+Role-specific demo videos:
 
-Demo output is written under `demo-output/`.
+```bash
+cd frontend
+npm run demo:roles:video
+```
 
-The demo flow is designed to be safe:
+Fast admin/RBAC smoke validation:
 
-- It navigates pages.
-- It changes read-only filters.
-- It opens drilldowns and incident detail.
-- It may generate the read-only report.
-- It does not approve, reject, archive, unarchive, execute response actions, create notes, update playbook steps, or create playbooks.
+```bash
+cd frontend
+npm run smoke:admin
+```
+
+Optional visual role-test recorder, when present:
+
+```bash
+cd frontend
+npm run test:roles:video
+```
+
+The main demo records `demo-output/soc-ai-agent-demo.webm`. It starts in light mode, visibly switches to the real dark theme after login, and remains dark for the rest of the recording. It should use visible header/navigation clicks for normal app navigation rather than invisible URL jumps.
+
+Role demo videos are written under `demo-output/roles/`:
+
+```text
+role-super-admin.webm
+role-analyst.webm
+role-viewer.webm
+role-demo-results.json
+```
+
+Role videos start and stay in dark mode, show the permissions available to each role, open the report page, return to the dashboard, and end with the configured closing caption. They can create disposable analyst/viewer demo users and disable them during cleanup.
+
+Demo env files are local-only:
+
+- `frontend/.env.demo` or `.env.demo` for demos.
+- `frontend/.env.smoke` or `.env.smoke` for smoke tests.
+- `frontend/.env.tests` or `.env.tests` for visual role-test recordings.
+
+Shell environment variables override env-file values. None of these files should be committed.
+
+The demo scripts are intentionally safe for incident data. They may navigate, scroll, filter, open drilldowns, open incident detail, and generate the read-only report. They must not approve, reject, archive, unarchive, execute response actions, create notes, update playbook steps, or create playbooks unless a future script explicitly documents disposable test data.
 
 ## 22. Manual Operational Checks
 
@@ -572,6 +609,7 @@ Never commit:
 - `.env`
 - `.env.demo`
 - `.env.smoke`
+- `.env.tests`
 - `incidents.db`
 - `venv/`
 - `__pycache__/`
@@ -579,6 +617,9 @@ Never commit:
 - `node_modules/`
 - `demo-output/`
 - `smoke-output/`
+- `tests-output/`
+- generated videos
+- generated screenshots
 - API keys
 - cookies
 - session tokens
@@ -586,9 +627,10 @@ Never commit:
 - plaintext passwords
 - AD credentials
 - LDAP bind passwords
-- command credentials
+- rendered command templates containing credentials
+- command output that may contain secrets
 
-Do not store auth/session tokens in browser storage.
+Do not store auth/session tokens in browser storage. The only expected browser storage key is `soc_theme`.
 
 Keep real destructive actions disabled unless intentionally testing in a controlled lab. Prefer dry-run modes for demos and validation.
 
