@@ -88,6 +88,8 @@ const disableCreatedUsers = envBoolean("DEMO_ROLES_DISABLE_CREATED_USERS", true)
 const generateReport = envBoolean("DEMO_ROLES_GENERATE_REPORT", false);
 const includeAdminUserCreation = envBoolean("DEMO_ROLES_INCLUDE_ADMIN_USER_CREATION", true);
 const includeForbiddenChecks = envBoolean("DEMO_ROLES_INCLUDE_FORBIDDEN_CHECKS", true);
+const finalCaption = process.env.DEMO_FINAL_CAPTION || "Hope you enjoyed the presentation";
+const finalCaptionMs = envNumber("DEMO_FINAL_CAPTION_MS", 2600);
 const runId = Date.now();
 const analystUsername = `demo_analyst_${runId}`;
 const viewerUsername = `demo_viewer_${runId}`;
@@ -97,16 +99,19 @@ const viewerResetPassword = `DemoRole!${runId}R`;
 let viewerLoginPassword = viewerPassword;
 const multiplier = speedMultiplier();
 const timing = {
-  captionMin: envNumber("DEMO_CAPTION_MIN_MS", 1000),
-  captionMax: envNumber("DEMO_CAPTION_MAX_MS", 2400),
-  captionPerChar: envNumber("DEMO_CAPTION_PER_CHAR_MS", 24),
-  pageMin: envNumber("DEMO_PAGE_MIN_MS", 900),
-  pageMax: envNumber("DEMO_PAGE_MAX_MS", 1900),
-  click: envNumber("DEMO_CLICK_PAUSE_MS", 500),
-  hover: envNumber("DEMO_HOVER_PAUSE_MS", 300),
-  section: envNumber("DEMO_SECTION_PAUSE_MS", 850),
-  scrollMin: envNumber("DEMO_SCROLL_MIN_MS", 450),
-  scrollMax: envNumber("DEMO_SCROLL_MAX_MS", 1200),
+  captionMin: envNumber("DEMO_CAPTION_MIN_MS", 850),
+  captionMax: envNumber("DEMO_CAPTION_MAX_MS", 2100),
+  captionPerChar: envNumber("DEMO_CAPTION_PER_CHAR_MS", 20),
+  captionIntro: envNumber("DEMO_CAPTION_INTRO_MS", 250),
+  stepSettle: envNumber("DEMO_STEP_SETTLE_MS", 550),
+  importantStepSettle: envNumber("DEMO_IMPORTANT_STEP_SETTLE_MS", 900),
+  pageMin: envNumber("DEMO_PAGE_MIN_MS", 700),
+  pageMax: envNumber("DEMO_PAGE_MAX_MS", 1500),
+  click: envNumber("DEMO_CLICK_PAUSE_MS", 380),
+  hover: envNumber("DEMO_HOVER_PAUSE_MS", 220),
+  section: envNumber("DEMO_SECTION_PAUSE_MS", 700),
+  scrollMin: envNumber("DEMO_SCROLL_MIN_MS", 380),
+  scrollMax: envNumber("DEMO_SCROLL_MAX_MS", 1000),
 };
 
 const results = [];
@@ -175,6 +180,24 @@ function captionDuration(text) {
 
 async function pause(page, value = timing.section) {
   await page.waitForTimeout(scaled(value));
+}
+
+async function pauseForCaptionIntro(page) {
+  await pause(page, timing.captionIntro);
+}
+
+async function pauseForActionSettle(page, importance = "normal") {
+  await pause(page, importance === "important" || importance === "high" ? timing.importantStepSettle : timing.stepSettle);
+}
+
+async function runDemoStep(page, caption, action, options = {}) {
+  if (caption) {
+    await showCaption(page, caption, { wait: false });
+    await pauseForCaptionIntro(page);
+  }
+  const result = await action();
+  await pauseForActionSettle(page, options.importance || "normal");
+  return result;
 }
 
 async function waitForPage(page) {
@@ -254,18 +277,18 @@ async function installVisualHelpers(page) {
         }
         #soc-role-demo-caption {
           position: fixed;
-          left: 28px;
+          right: 28px;
           bottom: 28px;
           z-index: 2147483646;
-          max-width: min(560px, calc(100vw - 56px));
-          border: 1px solid rgba(148, 163, 184, 0.45);
-          border-radius: 8px;
-          background: rgba(15, 23, 42, 0.9);
+          max-width: min(680px, calc(100vw - 56px));
+          border: 1px solid rgba(148, 163, 184, 0.55);
+          border-radius: calc(12px * var(--soc-role-demo-caption-scale, 1));
+          background: rgba(15, 23, 42, 0.92);
           color: #f8fafc;
-          box-shadow: 0 18px 42px rgba(15, 23, 42, 0.28);
-          font: 700 15px/1.35 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          box-shadow: 0 20px 48px rgba(15, 23, 42, 0.35);
+          font: 700 calc(18px * var(--soc-role-demo-caption-scale, 1))/1.35 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
           letter-spacing: 0;
-          padding: 11px 13px;
+          padding: calc(16px * var(--soc-role-demo-caption-scale, 1)) calc(18px * var(--soc-role-demo-caption-scale, 1));
           pointer-events: none;
           opacity: 0;
           transform: translateY(8px);
@@ -292,7 +315,7 @@ async function installVisualHelpers(page) {
   });
 }
 
-async function showCaption(page, text) {
+async function showCaption(page, text, options = {}) {
   await installVisualHelpers(page);
   await page.evaluate((captionText) => {
     let caption = document.getElementById("soc-role-demo-caption");
@@ -301,10 +324,14 @@ async function showCaption(page, text) {
       caption.id = "soc-role-demo-caption";
       document.body.appendChild(caption);
     }
+    const scale = Math.max(1, Math.min(1.35, window.innerWidth / 1920));
+    caption.style.setProperty("--soc-role-demo-caption-scale", String(scale));
     caption.textContent = captionText;
     requestAnimationFrame(() => caption.classList.add("visible"));
   }, text);
-  await page.waitForTimeout(captionDuration(text));
+  if (options.wait !== false) {
+    await page.waitForTimeout(captionDuration(text));
+  }
 }
 
 async function hideCaption(page) {
@@ -403,16 +430,22 @@ async function clickWithCursor(page, locator, caption, options = {}) {
   const target = locator.first();
   try {
     if (!(await target.count())) return false;
-    if (caption) await showCaption(page, caption);
-    await smoothScrollToLocator(page, target);
-    const center = await locatorCenter(target);
-    if (center) await glideCursorTo(page, center.x, center.y);
-    await pause(page, timing.hover);
-    await page.evaluate(() => document.getElementById("soc-role-demo-cursor")?.classList.add("clicking"));
-    await target.click({ timeout: options.timeout || 2500 });
-    await pause(page, 150);
-    await page.evaluate(() => document.getElementById("soc-role-demo-cursor")?.classList.remove("clicking"));
-    await pause(page, timing.click);
+    const clickAction = async () => {
+      await smoothScrollToLocator(page, target);
+      const center = await locatorCenter(target);
+      if (center) await glideCursorTo(page, center.x, center.y);
+      await pause(page, timing.hover);
+      await page.evaluate(() => document.getElementById("soc-role-demo-cursor")?.classList.add("clicking"));
+      await target.click({ timeout: options.timeout || 2500 });
+      await pause(page, 150);
+      await page.evaluate(() => document.getElementById("soc-role-demo-cursor")?.classList.remove("clicking"));
+    };
+    if (caption) {
+      await runDemoStep(page, caption, clickAction, { importance: options.importance || "normal" });
+    } else {
+      await clickAction();
+      await pause(page, timing.click);
+    }
     return true;
   } catch {
     await page.evaluate(() => document.getElementById("soc-role-demo-cursor")?.classList.remove("clicking")).catch(() => undefined);
@@ -429,25 +462,53 @@ async function fillWithCursor(page, locator, value) {
 async function scrollToText(page, text, caption) {
   const locator = page.getByText(text, { exact: true }).first();
   if (!(await locator.count().catch(() => 0))) return false;
-  if (caption) await showCaption(page, caption);
-  await smoothScrollToLocator(page, locator);
-  await pause(page, timing.section);
+  if (caption) {
+    await runDemoStep(page, caption, () => smoothScrollToLocator(page, locator));
+  } else {
+    await smoothScrollToLocator(page, locator);
+    await pause(page, timing.section);
+  }
   return true;
 }
 
 async function goto(page, pathname, caption) {
   await page.goto(urlFor(pathname), { waitUntil: "domcontentloaded" });
   await waitForPage(page);
+  await ensureTheme(page, rolesTheme);
   await installVisualHelpers(page);
-  if (caption) await showCaption(page, caption);
+  if (caption) {
+    await showCaption(page, caption, { wait: false });
+    await pauseForCaptionIntro(page);
+    await pauseForActionSettle(page);
+  }
   await pause(page, (timing.pageMin + timing.pageMax) / 2);
+}
+
+async function forceTheme(page, theme) {
+  const normalizedTheme = theme === "dark" ? "dark" : "light";
+  await page.evaluate((nextTheme) => {
+    localStorage.setItem("soc_theme", nextTheme);
+    document.documentElement.dataset.theme = nextTheme;
+    document.documentElement.style.colorScheme = nextTheme;
+    document.documentElement.classList.toggle("dark", nextTheme === "dark");
+    let style = document.getElementById("soc-demo-theme-prepaint");
+    if (!style) {
+      style = document.createElement("style");
+      style.id = "soc-demo-theme-prepaint";
+      document.documentElement.appendChild(style);
+    }
+    style.textContent =
+      nextTheme === "dark"
+        ? "html, body { background: #020617 !important; color-scheme: dark; }"
+        : "html, body { background: #f3f6fa !important; color-scheme: light; }";
+  }, normalizedTheme);
 }
 
 async function ensureTheme(page, theme) {
   const normalizedTheme = theme === "dark" ? "dark" : "light";
   const currentTheme = await page.evaluate(() => document.documentElement.dataset.theme || "light").catch(() => "light");
   if (currentTheme === normalizedTheme) return;
-  await clickWithCursor(page, page.getByRole("button", { name: normalizedTheme === "dark" ? /switch to dark mode/i : /switch to light mode/i }));
+  await forceTheme(page, normalizedTheme);
   await page.waitForFunction((nextTheme) => document.documentElement.dataset.theme === nextTheme, normalizedTheme, { timeout: 4000 });
 }
 
@@ -458,7 +519,23 @@ async function createRecordedContext(browser, videoFile) {
     recordVideo: { dir: outputDir, size: { width: videoWidth, height: videoHeight } },
   });
   await context.addInitScript((theme) => {
-    localStorage.setItem("soc_theme", theme === "light" ? "light" : "dark");
+    try {
+      const themeToApply = theme === "light" ? "light" : "dark";
+      localStorage.setItem("soc_theme", themeToApply);
+      document.documentElement.dataset.theme = themeToApply;
+      document.documentElement.style.colorScheme = themeToApply;
+      document.documentElement.classList.toggle("dark", themeToApply === "dark");
+      let style = document.getElementById("soc-demo-theme-prepaint");
+      if (!style) {
+        style = document.createElement("style");
+        style.id = "soc-demo-theme-prepaint";
+        document.documentElement.appendChild(style);
+      }
+      style.textContent =
+        themeToApply === "dark"
+          ? "html, body { background: #020617 !important; color-scheme: dark; }"
+          : "html, body { background: #f3f6fa !important; color-scheme: light; }";
+    } catch {}
   }, rolesTheme);
   const page = await context.newPage();
   activePage = page;
@@ -600,8 +677,9 @@ async function openFirstIncident(page, context, role) {
 
 async function demonstrateDashboard(page, role) {
   await goto(page, "/dashboard", `${role} dashboard: incidents, alert events, and event-weighted analytics.`);
-  await showCaption(page, "Total incidents counts stored cases; Total alert events counts correlated alert volume.");
-  await smoothScrollBy(page, 420);
+  await runDemoStep(page, "Total incidents counts stored cases; Total alert events counts correlated alert volume.", async () => {
+    await smoothScrollBy(page, 420);
+  });
   await scrollToText(page, "Alert/Event Evolution", "Alert/Event Evolution shows how activity changes over time.");
   await scrollToText(page, "MITRE ATT&CK Distribution", "MITRE, severity, decision, and agent charts summarize the SOC workload.");
   await scrollToText(page, "Severity Distribution");
@@ -618,12 +696,16 @@ async function demonstrateAnalytics(page) {
   if (await bucket.count()) {
     await clickWithCursor(page, bucket, "Opening a positive alert bucket drilldown when available.");
     await waitForPage(page);
-    await smoothScrollBy(page, 900);
+    await runDemoStep(page, "Alert drilldowns expand the selected time bucket into matching events.", async () => {
+      await smoothScrollBy(page, 900);
+    });
     await goto(page, "/analytics/alerts", "Back to the full timeline.");
   }
 
   await goto(page, "/analytics/mitre", "MITRE analytics shows complete event-weighted technique distribution.");
-  await smoothScrollBy(page, 760);
+  await runDemoStep(page, "The MITRE view keeps the complete technique distribution visible for review.", async () => {
+    await smoothScrollBy(page, 760);
+  });
   const firstTechnique = page.locator("main a.analytics-row").first();
   if (await firstTechnique.count()) {
     await clickWithCursor(page, firstTechnique, "Opening a MITRE-filtered drilldown.");
@@ -636,7 +718,9 @@ async function demonstrateIncidentDetail(page, context, role, readOnly = false) 
   await clickWithCursor(page, page.getByLabel("Archive scope"), "Archive scope controls active, archived, or all incidents.");
   await clickWithCursor(page, page.getByLabel("Severity"), "Severity and search filters narrow the queue.");
   await clickWithCursor(page, page.getByLabel("Date scope"), "Date scope filters day, month, year, or all history.");
-  await smoothScrollBy(page, 1400);
+  await runDemoStep(page, "The incident queue uses progressive loading as the page scrolls.", async () => {
+    await smoothScrollBy(page, 1400);
+  }, { importance: "important" });
   const incident = await openFirstIncident(page, context, role);
   if (!incident) return null;
 
@@ -689,15 +773,17 @@ async function demonstrateAudit(page) {
   await assert(await page.getByRole("heading", { name: /audit/i }).first().isVisible(), "/admin/audit did not load.");
   await scrollToText(page, "Audit Metrics", "Audit metrics summarize recent operational security activity.");
   await scrollToText(page, "Audit Events", "Audit events preserve what happened without leaking secrets.");
-  await smoothScrollBy(page, 760);
+  await runDemoStep(page, "Audit review keeps the operational trail visible without exposing secrets.", async () => {
+    await smoothScrollBy(page, 760);
+  });
 }
 
 async function demonstrateReport(page, role) {
   await goto(page, "/report", `${role} report page.`);
   await assert(await page.getByRole("heading", { name: "Report", level: 1 }).isVisible(), "/report did not load.");
   if (role !== "super_admin" || !generateReport) {
-    await skip(role, "Report generation", role === "super_admin" ? "DEMO_ROLES_GENERATE_REPORT=false." : "Role videos do not generate report by default.");
-    await showCaption(page, "Report generation is available here, but role videos skip it by default.");
+    await info(role, role === "super_admin" ? "Report generation not run because DEMO_ROLES_GENERATE_REPORT=false." : "Report generation not run in this role video.");
+    await showCaption(page, "Report generation is available for this role. It is skipped here to avoid repeated AI calls.");
     return;
   }
   const button = page.getByRole("button", { name: /generate report/i }).first();
@@ -707,6 +793,16 @@ async function demonstrateReport(page, role) {
     null,
     { timeout: 90000 },
   );
+  await runDemoStep(page, "Generated report output is reviewed once, then the role video returns to the dashboard.", async () => {
+    await smoothScrollBy(page, 980);
+  }, { importance: "important" });
+}
+
+async function finishRoleVideo(page, roleLabel) {
+  await goto(page, "/dashboard", `${roleLabel} returns to the dashboard to close the walkthrough.`);
+  await ensureTheme(page, rolesTheme);
+  await showCaption(page, finalCaption, { wait: false });
+  await page.waitForTimeout(Math.max(2200, scaled(finalCaptionMs)));
 }
 
 async function confirmForbidden(page, context, role, pathname, apiPath) {
@@ -737,6 +833,7 @@ async function recordSuperAdmin(browser) {
     await demonstrateAdminUsers(page, context);
     await demonstrateAudit(page);
     await demonstrateReport(page, "super_admin");
+    await finishRoleVideo(page, "Super admin");
   });
   await hideCaption(page);
   await closeRecordedContext(recording, "super_admin");
@@ -754,6 +851,7 @@ async function recordAnalyst(browser) {
     await confirmForbidden(page, context, "analyst", "/admin/users", "/admin/users");
     await confirmForbidden(page, context, "analyst", "/admin/audit", "/admin/audit-events");
     await demonstrateReport(page, "analyst");
+    await finishRoleVideo(page, "Analyst");
   });
   await hideCaption(page);
   await closeRecordedContext(recording, "analyst");
@@ -778,6 +876,7 @@ async function recordViewer(browser) {
     await confirmForbidden(page, context, "viewer", "/admin/users", "/admin/users");
     await confirmForbidden(page, context, "viewer", "/admin/audit", "/admin/audit-events");
     await demonstrateReport(page, "viewer");
+    await finishRoleVideo(page, "Viewer");
   });
   await hideCaption(page);
   await closeRecordedContext(recording, "viewer");
@@ -789,7 +888,21 @@ async function cleanupUsers(browser) {
     return;
   }
   const context = await browser.newContext();
-  await context.addInitScript(() => localStorage.setItem("soc_theme", "dark"));
+  await context.addInitScript(() => {
+    try {
+      localStorage.setItem("soc_theme", "dark");
+      document.documentElement.dataset.theme = "dark";
+      document.documentElement.style.colorScheme = "dark";
+      document.documentElement.classList.add("dark");
+      let style = document.getElementById("soc-demo-theme-prepaint");
+      if (!style) {
+        style = document.createElement("style");
+        style.id = "soc-demo-theme-prepaint";
+        document.documentElement.appendChild(style);
+      }
+      style.textContent = "html, body { background: #020617 !important; color-scheme: dark; }";
+    } catch {}
+  });
   const page = await context.newPage();
   activePage = page;
   try {

@@ -79,7 +79,7 @@ function demoSpeedMultiplier() {
     return numericMultiplier;
   }
 
-  const speed = (process.env.DEMO_SPEED || "normal").toLowerCase();
+  const speed = (process.env.DEMO_SPEED || "fast").toLowerCase();
   if (speed === "slow") {
     return 1.25;
   }
@@ -104,21 +104,27 @@ const generateReportInDemo = process.env.DEMO_GENERATE_REPORT !== "false";
 const reportTimeoutMs = envNumber("DEMO_REPORT_TIMEOUT_MS", "90000");
 const demoStartTheme = process.env.DEMO_START_THEME || "light";
 const switchToDarkAfterLogin = envBoolean("DEMO_SWITCH_TO_DARK_AFTER_LOGIN", true);
+const finalCaption = process.env.DEMO_FINAL_CAPTION || "Hope you enjoyed the presentation";
+const finalCaptionMs = envNumber("DEMO_FINAL_CAPTION_MS", "2600");
 const timing = {
-  captionMin: envNumber("DEMO_CAPTION_MIN_MS", "1400"),
-  captionMax: envNumber("DEMO_CAPTION_MAX_MS", "3200"),
-  captionPerChar: envNumber("DEMO_CAPTION_PER_CHAR_MS", "32"),
-  pageMin: envNumber("DEMO_PAGE_MIN_MS", "1200"),
-  pageMax: envNumber("DEMO_PAGE_MAX_MS", "2600"),
-  clickPause: envNumber("DEMO_CLICK_PAUSE_MS", "650"),
-  hoverPause: envNumber("DEMO_HOVER_PAUSE_MS", "420"),
-  filterPause: envNumber("DEMO_FILTER_PAUSE_MS", "900"),
-  rangePause: envNumber("DEMO_RANGE_PAUSE_MS", "850"),
-  sectionPause: envNumber("DEMO_SECTION_PAUSE_MS", "1200"),
-  scrollMin: envNumber("DEMO_SCROLL_MIN_MS", "650"),
-  scrollMax: envNumber("DEMO_SCROLL_MAX_MS", "1600"),
+  captionMin: envNumber("DEMO_CAPTION_MIN_MS", "850"),
+  captionMax: envNumber("DEMO_CAPTION_MAX_MS", "2100"),
+  captionPerChar: envNumber("DEMO_CAPTION_PER_CHAR_MS", "20"),
+  captionIntro: envNumber("DEMO_CAPTION_INTRO_MS", "250"),
+  stepSettle: envNumber("DEMO_STEP_SETTLE_MS", "550"),
+  importantStepSettle: envNumber("DEMO_IMPORTANT_STEP_SETTLE_MS", "900"),
+  pageMin: envNumber("DEMO_PAGE_MIN_MS", "700"),
+  pageMax: envNumber("DEMO_PAGE_MAX_MS", "1500"),
+  clickPause: envNumber("DEMO_CLICK_PAUSE_MS", "380"),
+  hoverPause: envNumber("DEMO_HOVER_PAUSE_MS", "220"),
+  filterPause: envNumber("DEMO_FILTER_PAUSE_MS", "500"),
+  rangePause: envNumber("DEMO_RANGE_PAUSE_MS", "520"),
+  sectionPause: envNumber("DEMO_SECTION_PAUSE_MS", "700"),
+  scrollMin: envNumber("DEMO_SCROLL_MIN_MS", "380"),
+  scrollMax: envNumber("DEMO_SCROLL_MAX_MS", "1000"),
 };
 const toggleTheme = process.env.DEMO_TOGGLE_THEME === "true";
+let keepDarkTheme = false;
 
 async function loadPlaywright() {
   try {
@@ -141,8 +147,67 @@ function urlFor(pathname) {
 async function setInitialTheme(context, theme) {
   const normalizedTheme = theme === "dark" ? "dark" : "light";
   await context.addInitScript((nextTheme) => {
-    localStorage.setItem("soc_theme", nextTheme);
+    try {
+      const storedTheme = localStorage.getItem("soc_theme");
+      const themeToApply = storedTheme === "dark" || storedTheme === "light" ? storedTheme : nextTheme;
+      localStorage.setItem("soc_theme", themeToApply);
+      document.documentElement.dataset.theme = themeToApply;
+      document.documentElement.style.colorScheme = themeToApply;
+      document.documentElement.classList.toggle("dark", themeToApply === "dark");
+      let style = document.getElementById("soc-demo-theme-prepaint");
+      if (!style) {
+        style = document.createElement("style");
+        style.id = "soc-demo-theme-prepaint";
+        document.documentElement.appendChild(style);
+      }
+      style.textContent =
+        themeToApply === "dark"
+          ? "html, body { background: #020617 !important; color-scheme: dark; }"
+          : "html, body { background: #f3f6fa !important; color-scheme: light; }";
+    } catch {}
   }, normalizedTheme);
+}
+
+async function forceTheme(page, theme) {
+  const normalizedTheme = theme === "dark" ? "dark" : "light";
+  await page.evaluate((nextTheme) => {
+    localStorage.setItem("soc_theme", nextTheme);
+    document.documentElement.dataset.theme = nextTheme;
+    document.documentElement.style.colorScheme = nextTheme;
+    document.documentElement.classList.toggle("dark", nextTheme === "dark");
+    let style = document.getElementById("soc-demo-theme-prepaint");
+    if (!style) {
+      style = document.createElement("style");
+      style.id = "soc-demo-theme-prepaint";
+      document.documentElement.appendChild(style);
+    }
+    style.textContent =
+      nextTheme === "dark"
+        ? "html, body { background: #020617 !important; color-scheme: dark; }"
+        : "html, body { background: #f3f6fa !important; color-scheme: light; }";
+  }, normalizedTheme);
+}
+
+async function ensureTheme(page, theme, options = {}) {
+  const normalizedTheme = theme === "dark" ? "dark" : "light";
+  const currentTheme = await page.evaluate(() => document.documentElement.dataset.theme || "light").catch(() => "light");
+  if (currentTheme === normalizedTheme) {
+    return;
+  }
+  if (options.visible) {
+    const label = normalizedTheme === "dark" ? /switch to dark mode/i : /switch to light mode/i;
+    const toggled = await clickWithDemoCursor(page, page.getByRole("button", { name: label }).first(), options.caption, { actionKind: "important" });
+    if (toggled) {
+      await page.waitForFunction((nextTheme) => document.documentElement.dataset.theme === nextTheme, normalizedTheme, { timeout: 4000 });
+      return;
+    }
+  }
+  await forceTheme(page, normalizedTheme);
+  await page.waitForFunction((nextTheme) => document.documentElement.dataset.theme === nextTheme, normalizedTheme, { timeout: 4000 });
+}
+
+async function ensureDarkTheme(page) {
+  await ensureTheme(page, "dark");
 }
 
 async function pause(page, ms = actionPause("normal")) {
@@ -171,12 +236,32 @@ function actionPause(kind) {
     low: 700,
     normal: timing.sectionPause,
     high: 1800,
+    important: timing.importantStepSettle,
   };
   return scaledTiming(values[kind] ?? values.normal);
 }
 
 async function pauseForCaption(page, text, options = {}) {
   await pause(page, captionDuration(text, options));
+}
+
+async function pauseForCaptionIntro(page) {
+  await pause(page, scaledTiming(timing.captionIntro));
+}
+
+async function pauseForActionSettle(page, importance = "normal") {
+  const duration = importance === "important" || importance === "high" ? timing.importantStepSettle : timing.stepSettle;
+  await pause(page, scaledTiming(duration));
+}
+
+async function runDemoStep(page, caption, action, options = {}) {
+  if (caption) {
+    await showCaption(page, caption, { wait: false });
+    await pauseForCaptionIntro(page);
+  }
+  const result = await action();
+  await pauseForActionSettle(page, options.importance || options.actionKind || "normal");
+  return result;
 }
 
 async function pauseForAction(page, kind) {
@@ -188,7 +273,7 @@ async function waitForPage(page) {
   await page.waitForTimeout(350);
 }
 
-async function showCaption(page, text) {
+async function showCaption(page, text, options = {}) {
   await page.evaluate((captionText) => {
     const id = "soc-demo-caption";
     let caption = document.getElementById(id);
@@ -198,18 +283,18 @@ async function showCaption(page, text) {
       style.textContent = `
         #${id} {
           position: fixed;
-          left: 28px;
+          right: 28px;
           bottom: 28px;
           z-index: 2147483647;
-          max-width: min(520px, calc(100vw - 56px));
-          border: 1px solid rgba(148, 163, 184, 0.45);
-          border-radius: 8px;
-          background: rgba(15, 23, 42, 0.88);
+          max-width: min(680px, calc(100vw - 56px));
+          border: 1px solid rgba(148, 163, 184, 0.55);
+          border-radius: calc(12px * var(--soc-demo-caption-scale, 1));
+          background: rgba(15, 23, 42, 0.92);
           color: #f8fafc;
-          box-shadow: 0 18px 42px rgba(15, 23, 42, 0.28);
-          font: 700 16px/1.35 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          box-shadow: 0 20px 48px rgba(15, 23, 42, 0.35);
+          font: 700 calc(18px * var(--soc-demo-caption-scale, 1))/1.35 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
           letter-spacing: 0;
-          padding: 12px 14px;
+          padding: calc(16px * var(--soc-demo-caption-scale, 1)) calc(18px * var(--soc-demo-caption-scale, 1));
           pointer-events: none;
           opacity: 0;
           transform: translateY(8px);
@@ -225,10 +310,14 @@ async function showCaption(page, text) {
       caption.id = id;
       document.body.appendChild(caption);
     }
+    const scale = Math.max(1, Math.min(1.35, window.innerWidth / 1920));
+    caption.style.setProperty("--soc-demo-caption-scale", String(scale));
     caption.textContent = captionText;
     requestAnimationFrame(() => caption.classList.add("visible"));
   }, text);
-  await pauseForCaption(page, text);
+  if (options.wait !== false) {
+    await pauseForCaption(page, text, options);
+  }
 }
 
 async function ensureDemoCursor(page) {
@@ -477,10 +566,11 @@ async function smoothScrollToText(page, text, caption, options = {}) {
       return false;
     }
     if (caption) {
-      await showCaption(page, caption);
+      await runDemoStep(page, caption, () => smoothScrollToLocator(page, locator), { importance: options.importance || "normal" });
+    } else {
+      await smoothScrollToLocator(page, locator);
+      await pauseForAction(page, options.importance || "section");
     }
-    await smoothScrollToLocator(page, locator);
-    await pauseForAction(page, options.importance || "section");
     return true;
   } catch {
     return false;
@@ -494,17 +584,21 @@ async function clickWithDemoCursor(page, locator, caption, options = {}) {
     if (!(await target.count())) {
       return false;
     }
+    const clickAction = async () => {
+      await smoothScrollToLocator(page, target, { desiredY: Math.round((page.viewportSize()?.height || videoHeight) * 0.38) });
+      await moveCursorToLocator(page, target);
+      await pauseForAction(page, "hover");
+      await setDemoCursorClicking(page, true);
+      await target.click({ timeout });
+      await pause(page, scaledTiming(150));
+      await setDemoCursorClicking(page, false);
+    };
     if (caption) {
-      await showCaption(page, caption);
+      await runDemoStep(page, caption, clickAction, { importance: options.actionKind || "normal" });
+    } else {
+      await clickAction();
+      await pauseForAction(page, options.actionKind || "click");
     }
-    await smoothScrollToLocator(page, target, { desiredY: Math.round((page.viewportSize()?.height || videoHeight) * 0.38) });
-    await moveCursorToLocator(page, target);
-    await pauseForAction(page, "hover");
-    await setDemoCursorClicking(page, true);
-    await target.click({ timeout });
-    await pause(page, scaledTiming(150));
-    await setDemoCursorClicking(page, false);
-    await pauseForAction(page, options.actionKind || "click");
     return true;
   } catch {
     await setDemoCursorClicking(page, false).catch(() => undefined);
@@ -582,10 +676,15 @@ async function waitForReportResult(page, initialText) {
 async function goto(page, pathname, caption) {
   await page.goto(urlFor(pathname), { waitUntil: "domcontentloaded" });
   await waitForPage(page);
+  if (keepDarkTheme) {
+    await ensureDarkTheme(page);
+  }
   await ensureDemoCursor(page);
   await moveDemoCursor(page, Math.round(videoWidth * 0.16), Math.round(videoHeight * 0.18));
   if (caption) {
-    await showCaption(page, caption);
+    await showCaption(page, caption, { wait: false });
+    await pauseForCaptionIntro(page);
+    await pauseForActionSettle(page, "normal");
   }
   await pauseForAction(page, "page");
 }
@@ -667,29 +766,23 @@ async function switchDemoToDarkMode(page) {
     return;
   }
 
-  const currentTheme = await page.evaluate(() => document.documentElement.dataset.theme || "light").catch(() => "light");
-  if (currentTheme === "dark") {
-    return;
-  }
-
-  await showCaption(page, "Switching to dark mode for the SOC analyst workflow");
-  const toggled = await clickWithDemoCursor(page, page.getByRole("button", { name: /switch to dark mode/i }).first(), undefined, {
-    actionKind: "click",
+  await ensureTheme(page, "dark", {
+    visible: true,
+    caption: "Switching to dark mode for the SOC analyst workflow",
   });
-  if (toggled) {
-    await page.waitForFunction(() => document.documentElement.dataset.theme === "dark", null, { timeout: 4000 });
-  }
+  keepDarkTheme = true;
 }
 
 async function demonstrateDashboard(page) {
-  await showCaption(page, "Dashboard metrics: incidents vs alert events");
-  await smoothScrollBy(page, 320);
-  await pauseForAction(page, "low");
-  await showCaption(page, "Alert/Event Evolution: correlated events over time");
-  await clickWithDemoCursor(page, page.getByRole("button", { name: "24h" }), undefined, { actionKind: "range" });
-  await clickWithDemoCursor(page, page.getByRole("button", { name: "7d" }), undefined, { actionKind: "range" });
-  await clickWithDemoCursor(page, page.getByRole("button", { name: "1m" }), undefined, { actionKind: "range" });
-  await clickWithDemoCursor(page, page.getByRole("button", { name: "1y" }), undefined, { actionKind: "range" });
+  await runDemoStep(page, "Dashboard metrics: incidents vs alert events", async () => {
+    await smoothScrollBy(page, 320);
+  });
+  await runDemoStep(page, "Alert/Event Evolution: correlated events over time", async () => {
+    await clickWithDemoCursor(page, page.getByRole("button", { name: "24h" }), undefined, { actionKind: "range" });
+    await clickWithDemoCursor(page, page.getByRole("button", { name: "7d" }), undefined, { actionKind: "range" });
+    await clickWithDemoCursor(page, page.getByRole("button", { name: "1m" }), undefined, { actionKind: "range" });
+    await clickWithDemoCursor(page, page.getByRole("button", { name: "1y" }), undefined, { actionKind: "range" });
+  }, { importance: "important" });
   await safeScrollToText(page, "MITRE ATT&CK Distribution", "MITRE ATT&CK: event-weighted techniques", { importance: "high" });
   await safeScrollToText(page, "Severity Distribution", "Severity and decision distributions");
   await safeScrollToText(page, "Decision Distribution", "Severity and decision distributions");
@@ -703,16 +796,18 @@ async function demonstrateAlertTimeline(page) {
   if (!(await safeGotoOrContinue(page, "/analytics/alerts", "Full alert timeline"))) {
     return;
   }
-  await showCaption(page, "Alert/Event Evolution: correlated events over time");
-  for (const range of ["24h", "7d", "1m", "1y"]) {
-    await clickWithDemoCursor(page, page.getByRole("button", { name: range }), `Timeline range: ${range}`, { actionKind: "range" });
-  }
+  await runDemoStep(page, "Alert/Event Evolution: correlated events over time", async () => {
+    for (const range of ["24h", "7d", "1m", "1y"]) {
+      await clickWithDemoCursor(page, page.getByRole("button", { name: range }), `Timeline range: ${range}`, { actionKind: "range" });
+    }
+  }, { importance: "important" });
   if (await clickFirstPositiveTimelineBucket(page)) {
-    await showCaption(page, "Alert drilldown: MITRE technique and severity badges");
-    await smoothScrollBy(page, 720);
-    await pauseForAction(page, "section");
-    await smoothScrollBy(page, 1700);
-    await showCaption(page, "Alert drilldowns load more results as the analyst scrolls");
+    await runDemoStep(page, "Alert drilldown: MITRE technique and severity badges", async () => {
+      await smoothScrollBy(page, 720);
+    });
+    await runDemoStep(page, "Alert drilldowns load more results as the analyst scrolls", async () => {
+      await smoothScrollBy(page, 1700);
+    }, { importance: "important" });
     await clickBackToTimeline(page);
   }
 }
@@ -736,21 +831,22 @@ async function demonstrateIncidents(page) {
   if (!(await safeGotoOrContinue(page, "/incidents", "Incident triage queue"))) {
     return;
   }
-  await showCaption(page, "Incident filters: archive scope, severity, date");
-  await safeSelectAny(page, "Archive scope", ["false", "active"]);
-  await safeSelectAny(page, "Archive scope", ["all"]);
-  if (!(await safeSelect(page, "Severity", "critical"))) {
-    await safeSelect(page, "Severity", "high");
-  }
-  await safeSelect(page, "Date scope", "all");
-  if (await safeSelect(page, "Date scope", "day")) {
-    await safeSelect(page, "Date scope", "month");
-    await safeSelect(page, "Date scope", "year");
+  await runDemoStep(page, "Incident filters: archive scope, severity, date", async () => {
+    await safeSelectAny(page, "Archive scope", ["false", "active"]);
+    await safeSelectAny(page, "Archive scope", ["all"]);
+    if (!(await safeSelect(page, "Severity", "critical"))) {
+      await safeSelect(page, "Severity", "high");
+    }
     await safeSelect(page, "Date scope", "all");
-  }
-  await showCaption(page, "Incidents load progressively as the analyst scrolls");
-  await smoothScrollBy(page, 1900);
-  await pauseForAction(page, "section");
+    if (await safeSelect(page, "Date scope", "day")) {
+      await safeSelect(page, "Date scope", "month");
+      await safeSelect(page, "Date scope", "year");
+      await safeSelect(page, "Date scope", "all");
+    }
+  }, { importance: "important" });
+  await runDemoStep(page, "Incidents load progressively as the analyst scrolls", async () => {
+    await smoothScrollBy(page, 1900);
+  }, { importance: "important" });
   await clickWithDemoCursor(page, page.getByRole("button", { name: /clear filters/i }), "Clearing filters to show the full queue");
 
   const firstIncident = page.locator("main a[href^='/incidents/']").first();
@@ -828,7 +924,8 @@ async function demonstrateReport(page) {
     return;
   }
 
-  await showCaption(page, "Generating the executive SOC report");
+  await showCaption(page, "Generating the executive SOC report", { wait: false });
+  await pauseForCaptionIntro(page);
   await moveCursorToLocator(page, page.locator(".report-panel").first());
   const reportReady = await waitForReportResult(page, initialText);
   if (reportReady) {
@@ -848,9 +945,14 @@ async function maybeToggleTheme(page) {
   if (!toggleTheme) {
     return;
   }
-  await showCaption(page, "Theme check: light and dark mode");
-  await clickWithDemoCursor(page, page.getByRole("button", { name: /switch to dark|switch to light/i }));
-  await clickWithDemoCursor(page, page.getByRole("button", { name: /switch to dark|switch to light/i }));
+  await ensureDarkTheme(page);
+  await showCaption(page, "Dark mode remains active for the rest of the SOC analyst workflow.");
+}
+
+async function showFinalCaption(page) {
+  await ensureDarkTheme(page);
+  await showCaption(page, finalCaption, { wait: false });
+  await pause(page, Math.max(2200, scaledTiming(finalCaptionMs)));
 }
 
 async function saveRecordedVideo(page) {
@@ -899,7 +1001,7 @@ async function main() {
     await demonstrateReport(page);
     await goto(page, "/dashboard", "Back to dashboard metrics");
     await maybeToggleTheme(page);
-    await pauseForAction(page, "page");
+    await showFinalCaption(page);
   } catch (error) {
     flowError = error;
     console.error("Demo flow failed before completion:", error);

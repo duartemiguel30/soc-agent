@@ -487,22 +487,31 @@ DEMO_HEADLESS=false
 ## 1080 ##
 DEMO_VIDEO_WIDTH=1920
 DEMO_VIDEO_HEIGHT=1080
-DEMO_SPEED=normal
-DEMO_CAPTION_MIN_MS=1400
-DEMO_CAPTION_MAX_MS=3200
-DEMO_CAPTION_PER_CHAR_MS=32
-DEMO_PAGE_MIN_MS=1200
-DEMO_PAGE_MAX_MS=2600
-DEMO_CLICK_PAUSE_MS=650
-DEMO_HOVER_PAUSE_MS=420
-DEMO_FILTER_PAUSE_MS=900
-DEMO_RANGE_PAUSE_MS=850
-DEMO_SECTION_PAUSE_MS=1200
-DEMO_SCROLL_MIN_MS=650
-DEMO_SCROLL_MAX_MS=1600
+DEMO_SPEED=fast
+DEMO_CAPTION_MIN_MS=850
+DEMO_CAPTION_MAX_MS=2100
+DEMO_CAPTION_PER_CHAR_MS=20
+DEMO_CAPTION_INTRO_MS=250
+DEMO_STEP_SETTLE_MS=550
+DEMO_IMPORTANT_STEP_SETTLE_MS=900
+DEMO_PAGE_MIN_MS=700
+DEMO_PAGE_MAX_MS=1500
+DEMO_CLICK_PAUSE_MS=380
+DEMO_HOVER_PAUSE_MS=220
+DEMO_FILTER_PAUSE_MS=500
+DEMO_RANGE_PAUSE_MS=520
+DEMO_SECTION_PAUSE_MS=700
+DEMO_SCROLL_MIN_MS=380
+DEMO_SCROLL_MAX_MS=1000
 DEMO_SLOW_MO_MS=220
 DEMO_GENERATE_REPORT=true
 DEMO_REPORT_TIMEOUT_MS=90000
+DEMO_FINAL_CAPTION=Hope you enjoyed the presentation
+DEMO_FINAL_CAPTION_MS=2600
+DEMO_START_THEME=light
+DEMO_SWITCH_TO_DARK_AFTER_LOGIN=true
+DEMO_ROLES_THEME=dark
+DEMO_ROLES_GENERATE_REPORT=false
 ```
 
 Example 4K presentation block:
@@ -529,6 +538,9 @@ Optional variables:
 - `DEMO_CAPTION_MIN_MS`: defaults to `1400`.
 - `DEMO_CAPTION_MAX_MS`: defaults to `3200`.
 - `DEMO_CAPTION_PER_CHAR_MS`: defaults to `32`.
+- `DEMO_CAPTION_INTRO_MS`: defaults to `350`; short pause after a caption appears before its action starts.
+- `DEMO_STEP_SETTLE_MS`: defaults to `700`; pause after normal captioned actions.
+- `DEMO_IMPORTANT_STEP_SETTLE_MS`: defaults to `1100`; pause after important captioned actions.
 - `DEMO_PAGE_MIN_MS`: defaults to `1200`.
 - `DEMO_PAGE_MAX_MS`: defaults to `2600`.
 - `DEMO_CLICK_PAUSE_MS`: defaults to `650`.
@@ -540,7 +552,11 @@ Optional variables:
 - `DEMO_SCROLL_MAX_MS`: defaults to `1600`.
 - `DEMO_GENERATE_REPORT`: defaults to `true`; the recorder clicks `Generate report` on `/report`.
 - `DEMO_REPORT_TIMEOUT_MS`: defaults to `90000`; controls how long the recorder waits for generated report output.
-- `DEMO_TOGGLE_THEME=true`: toggles light/dark mode once during the recording.
+- `DEMO_START_THEME`: defaults to `light`; the main demo opens login/dashboard in light mode.
+- `DEMO_SWITCH_TO_DARK_AFTER_LOGIN`: defaults to `true`; the main demo visibly switches to dark mode after login and stays dark.
+- `DEMO_ROLES_THEME`: defaults to `dark`; role-based demo videos start and stay dark.
+- `DEMO_FINAL_CAPTION`: defaults to `Hope you enjoyed the presentation`.
+- `DEMO_FINAL_CAPTION_MS`: defaults to `2600`; controls the closing caption hold.
 - `DEMO_ENV_FILE`: optional path to a specific demo env file.
 
 For faster local test recordings, override the video size:
@@ -577,7 +593,7 @@ ffmpeg -y -i demo-output/soc-ai-agent-demo.webm \
   demo-output/soc-ai-agent-demo.mp4
 ```
 
-The demo covers dashboard metrics, Alert/Event Evolution, alert timeline drilldowns, MITRE analytics, incident filters and progressive loading, incident detail sections, response-action availability, and `/report`. On `/report`, it clicks `Generate report` by default and waits for the read-only generated executive summary to appear. This may call Gemini or another upstream AI service and can take time. Captions intentionally stay visible long enough for viewers to read them, and the injected cursor exists only during recording.
+The demo covers dashboard metrics, Alert/Event Evolution, alert timeline drilldowns, MITRE analytics, incident filters and progressive loading, incident detail sections, response-action availability, and `/report`. On `/report`, it clicks `Generate report` by default and waits for the read-only generated executive summary to appear. This may call Gemini or another upstream AI service and can take time. The main demo starts in light mode, visibly switches to dark mode after login, then remains dark. Captions are synchronized with the visible cursor, click, scroll, and navigation actions, and the demo returns to the dashboard for a closing caption before recording ends. The injected cursor exists only during recording.
 
 The demo flow opens pages, changes read-only filters, scrolls, opens drilldowns, opens an incident detail, and generates the read-only report; it does not approve, reject, archive, unarchive, execute response actions, create notes, update playbook steps, or create playbooks.
 
@@ -590,7 +606,7 @@ cd frontend
 npm run demo:roles:video
 ```
 
-This uses `.env.demo`, generates one video each for super-admin/admin, analyst, and viewer under `demo-output/roles/`, and stays separate from `npm run demo:record`. It is safe by default: it does not execute destructive response actions, does not approve/reject/archive incidents, and creates disposable analyst/viewer demo users only when configured, disabling them during cleanup.
+This uses `.env.demo`, generates one video each for super-admin/admin, analyst, and viewer under `demo-output/roles/`, and stays separate from `npm run demo:record`. Role videos start and stay in dark mode, open the report page without generating repeated reports by default, return to the dashboard, and end with the closing caption. They are safe by default: they do not execute destructive response actions, do not approve/reject/archive incidents, and create disposable analyst/viewer demo users only when configured, disabling them during cleanup.
 
 ## Visual Role Test Recordings
 
